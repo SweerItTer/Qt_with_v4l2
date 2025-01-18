@@ -9,37 +9,49 @@
 
 #include <QObject>
 #include <QImage>
+#include <QQueue>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QThread>
+
+#include <linux/videodev2.h>
 
 using namespace std;
 
-class Vvideo : public QObject
+class Vvideo : public QThread 
 {
     Q_OBJECT
 public:
-    public:
-    explicit Vvideo(const QString &device, const __u32 &format, const QString &_resolution, const bool& is_M_,
-     QObject *parent = nullptr);
+    
+    explicit Vvideo(const bool& is_M_, QObject *parent = nullptr);
     ~Vvideo();
 
-    bool openDevice();
+    void run() override ;
+    int quit_ = 0;
+
+    int openDevice(const QString& deviceName);
     
-    int startCapture();
-    int stopCapture();
+    int setFormat(const __u32& w_, const __u32&h_, const __u32& fmt_);
+    int initBuffers();
     QImage captureFrame();
 
-    bool closeDevice();
+    int closeDevice();
 
 signals:
     void frameAvailable(const QImage &frame);
-
+    
 private:
     int fd;
     bool is_M;
-    QString deviceName;
-    __u32 pixformat;
-    QString resolution;
-    // 其他必要的成员变量
-};
 
+    struct v4l2_buffer buffer;
+
+    QQueue<QImage> frameQueue;  // 帧队列
+    void* buffer_start;        // 缓冲区起始地址
+    size_t buffer_length;      // 缓冲区长度
+    QMutex mutex;              // 线程锁
+    __u32 w,h,fmt;
+    void updateFrame();
+};
 
 #endif // V4L2_VIDEO_H

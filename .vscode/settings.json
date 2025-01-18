@@ -55,6 +55,20 @@
         "variant": "cpp",
         "cstring": "cpp",
         "qdebug": "cpp",
-        "qimage": "cpp"
+        "qimage": "cpp",
+        "bit": "cpp",
+        "compare": "cpp",
+        "concepts": "cpp",
+        "condition_variable": "cpp",
+        "future": "cpp",
+        "mutex": "cpp",
+        "numbers": "cpp",
+        "semaphore": "cpp",
+        "stop_token": "cpp",
+        "thread": "cpp",
+        "iostream": "cpp",
+        "qmessagebox": "cpp",
+        "qmutex": "cpp",
+        "qqueue": "cpp"
     }
 }

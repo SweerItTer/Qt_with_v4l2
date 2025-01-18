@@ -26,6 +26,8 @@ private slots:
     void on_devices_currentIndexChanged(int index);
     void fillComboBoxWithResolutions(int a);
 
+    void updateFrame(const QImage& frame);
+
 private:
     // 填充下拉框
     void fillComboBoxWithV4L2Devices();
@@ -37,7 +39,7 @@ private:
     QComboBox *devicesComboBox = nullptr;
     QComboBox *pixFormatComboBox = nullptr;
     QComboBox *resolutionsComboBox = nullptr;
-    Vvideo *Vv = nullptr;
+    Vvideo *m_captureThread = nullptr;
 
 	int fd = -1;
 };

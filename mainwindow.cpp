@@ -24,6 +24,7 @@ QVector<DeviceInfo> v4l2Devices;
 MainWindow::MainWindow(QWidget *parent)
 	: QWidget(parent)
 	, ui(new Ui::MainWindow)
+	, m_captureThread(nullptr)
 {
 	ui->setupUi(this);
 	ui->takepic->setIconSize(QSize(40, 40)); // 设置图标大小
@@ -37,7 +38,6 @@ MainWindow::MainWindow(QWidget *parent)
 
 	connect(devicesComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(on_devices_currentIndexChanged(int)));
     connect(pixFormatComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(fillComboBoxWithResolutions(int)));
-
 }
 
 MainWindow::~MainWindow()
@@ -45,7 +45,12 @@ MainWindow::~MainWindow()
 	if(fd != -1){
 		::close(fd);
 	}
-    if(Vv) delete Vv;
+    if(m_captureThread){
+        m_captureThread->quit_ = 1;
+        m_captureThread->quit();
+        m_captureThread->wait();
+        delete m_captureThread;
+    }
     delete devicesComboBox;
     delete pixFormatComboBox;
     delete resolutionsComboBox;
@@ -165,6 +170,53 @@ void MainWindow::fillComboBoxWithResolutions(int a) {
     fillComboBoxWithResolutions(false);
     ::close(fd);
 }
+
+void MainWindow::on_open_pb_released()
+{
+    if(m_captureThread){
+        m_captureThread->quit_ = 1;
+        m_captureThread->quit();
+        m_captureThread->wait();
+        delete m_captureThread;
+    }
+    m_captureThread = new Vvideo(global_M);  
+
+    // 初始化V4L2设备
+    if (m_captureThread->openDevice(devicesComboBox->currentText()) < 0) {
+        QMessageBox::critical(this, "error", "Open device failed.");
+        return;
+    }
+    
+    // 设置视频格式
+    QString resolution = resolutionsComboBox->currentText();
+    
+    int xIndex = resolution.indexOf('x');
+    __u32 width = resolution.left(xIndex).toUInt();
+    __u32 height = resolution.mid(xIndex + 1).toUInt();
+    if (m_captureThread->setFormat(width, height, pixFormatComboBox->currentData().toUInt()) < 0) {
+        QMessageBox::critical(this, "error", "set pixformat failed.");
+        return;
+    }
+    
+    // 初始化缓冲区
+    if (m_captureThread->initBuffers() < 0) {
+        QMessageBox::critical(this, "error", "initial map failed.");
+        return;
+    }
+    
+    // 开始视频流
+    m_captureThread->start();    
+    connect(m_captureThread, &Vvideo::frameAvailable, this, &MainWindow::updateFrame, Qt::UniqueConnection);
+
+}
+
+void MainWindow::updateFrame(const QImage& frame)
+{
+    ui->Display->setPixmap(QPixmap::fromImage(frame).scaled(
+        ui->Display->width(), ui->Display->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+
 void MainWindow::on_takepic_pressed()
 {
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_2.svg")); // 设置SVG图标
@@ -173,17 +225,4 @@ void MainWindow::on_takepic_pressed()
 void MainWindow::on_takepic_released()
 {
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
-}
-
-void MainWindow::on_open_pb_released()
-{
-    if(Vv){
-        while(! Vv->closeDevice() ); // 成功关闭设备
-        delete Vv;
-    }
-    Vv = new Vvideo(devicesComboBox->currentText(), pixFormatComboBox->currentData().toUInt(), resolutionsComboBox->currentText(), global_M);
-    bool ret = Vv->openDevice();
-    if(ret == false){ // 打开失败
-        QMessageBox::critical(this, tr("Device Error"), tr("Failed to open the selected device.\nPlease check if the device is connected properly or in use by another application."));
-    }
 }
