@@ -18,6 +18,11 @@
 
 using namespace std;
 
+typedef struct __video_buffer {
+    void *start;
+    size_t length;
+} video_buf_t;
+
 class Vvideo : public QThread 
 {
     Q_OBJECT
@@ -44,14 +49,21 @@ private:
     int fd;
     bool is_M;
 
-    struct v4l2_buffer buffer;
-
     QQueue<QImage> frameQueue;  // 帧队列
-    void* buffer_start;        // 缓冲区起始地址
-    size_t buffer_length;      // 缓冲区长度
     QMutex mutex;              // 线程锁
     __u32 w,h,fmt;
+
+    struct v4l2_buffer buffer;
+    video_buf_t *framebuf = nullptr;
+    // void* buffer_start;        // 缓冲区起始地址
+    // size_t buffer_length;      // 缓冲区长度
+    
     void updateFrame();
+
+    void MJPG2RGB(QImage &image_, void *data, size_t length);
+    void YUYV2RGB(QImage &image_, void *data, size_t length);
+
+
 };
 
 #endif // V4L2_VIDEO_H

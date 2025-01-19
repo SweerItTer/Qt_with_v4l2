@@ -30,6 +30,9 @@ MainWindow::MainWindow(QWidget *parent)
 	ui->takepic->setIconSize(QSize(40, 40)); // 设置图标大小
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
 
+    ui->Display->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
+
 	devicesComboBox = ui->devices;
 	pixFormatComboBox = ui->pixformat;
 	resolutionsComboBox = ui->resolutions;
@@ -50,6 +53,7 @@ MainWindow::~MainWindow()
         m_captureThread->quit();
         m_captureThread->wait();
         delete m_captureThread;
+        m_captureThread = nullptr;
     }
     delete devicesComboBox;
     delete pixFormatComboBox;
@@ -67,28 +71,34 @@ bool isCharacterDevice(const QString &path) {
 }
 
 // 检查给定的设备路径是否是V4L2视频设备
-bool isV4L2Device(const QString &path, bool& isMultiPlane) {
-    int fd = open(path.toLocal8Bit().constData(), O_RDWR);
+bool isV4L2VideoCaptureDevice(const QString &path, bool& isMultiPlane) {
+    int fd = open(path.toLocal8Bit().constData(), O_RDWR | O_NONBLOCK); // 使用非阻塞模式打开设备
     if (fd < 0) {
         return false;
     }
 
     v4l2_capability cap;
-    // 以适应V4L2_CAP_VIDEO_CAPTURE和V4L2_CAP_VIDEO_CAPTURE_MPLANE
-    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0) {
-        if ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) == V4L2_CAP_VIDEO_CAPTURE) {
-            isMultiPlane = false;
-            close(fd);
-            return true;
-        }
-        if ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) == V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
-            isMultiPlane = true;
-            close(fd);
-            return true;
-        }
+    // 查询设备功能
+    if (ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0) {
+        close(fd);
+        return false;
     }
+
+    // 检查设备是否支持视频捕获
+    if ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) == V4L2_CAP_VIDEO_CAPTURE) {
+        isMultiPlane = false;
+        close(fd);
+        return true;
+    }
+    // 检查设备是否支持多平面视频捕获
+    if ((cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) == V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
+        isMultiPlane = true;
+        close(fd);
+        return true;
+    }
+
     close(fd);
-    return false;   
+    return false;
 }
 
 void MainWindow::fillComboBoxWithV4L2Devices() {
@@ -97,25 +107,36 @@ void MainWindow::fillComboBoxWithV4L2Devices() {
     filters << "video*"; // 过滤出以 "video" 开头的设备文件
     QStringList devices = devDir.entryList(filters, QDir::Files | QDir::System);
 
-	bool deviceFound = false;
-    bool isMultiPlane = false;
+    bool deviceFound = false;
     foreach (const QString &device, devices) {
         QString path = devDir.path() + "/" + device;
-        if (isCharacterDevice(path) && isV4L2Device(path, isMultiPlane)) {
-            devicesComboBox->addItem(path, path);
-            v4l2Devices.append({path, isMultiPlane});
-            deviceFound = true;
+        if (isCharacterDevice(path)) {
+            bool isMultiPlane = false;
+            if (isV4L2VideoCaptureDevice(path, isMultiPlane)) {
+                devicesComboBox->addItem(path, path);
+                v4l2Devices.append({path, isMultiPlane});
+                deviceFound = true;
+            }
         }
     }
 
     if (!deviceFound) {
-        QMessageBox::warning(this, tr("Device Not Found"), tr("No devices found."));
+        QMessageBox::warning(this, tr("Device Not Found"), tr("No video capture devices found."));
         return;
     }
-    on_devices_currentIndexChanged(0);
+    on_devices_currentIndexChanged(0); 
 }
 // 槽函数:更新格式和分辨率
 void MainWindow::on_devices_currentIndexChanged(int index) {
+    disconnect(pixFormatComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(fillComboBoxWithResolutions(int)));
+
+    if(m_captureThread){
+        m_captureThread->quit_ = 1;
+        m_captureThread->quit();
+        m_captureThread->wait();
+        delete m_captureThread;
+        m_captureThread = nullptr;
+    }
     QString devicePath = devicesComboBox->itemData(index).toString();
 
     auto it = std::find_if(v4l2Devices.begin(), v4l2Devices.end(),
@@ -129,11 +150,15 @@ void MainWindow::on_devices_currentIndexChanged(int index) {
 
         pixFormatComboBox->clear();
         resolutionsComboBox->clear();
+        global_M = it->isMultiPlane;
+
         fillComboBoxWithPixFormats(it->isMultiPlane);
         fillComboBoxWithResolutions(it->isMultiPlane);
-        global_M = it->isMultiPlane;
+
         ::close(fd);
     }
+    connect(pixFormatComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(fillComboBoxWithResolutions(int)));
+
 }
 
 void MainWindow::fillComboBoxWithPixFormats(bool isMultiPlane) {
@@ -141,9 +166,11 @@ void MainWindow::fillComboBoxWithPixFormats(bool isMultiPlane) {
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = isMultiPlane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
+
     while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) == 0) {
         pixFormatComboBox->addItem(QString::fromUtf8(reinterpret_cast<const char*>(fmt.description)), fmt.pixelformat);
         fmt.index++;
+
     }
 }
 
@@ -162,6 +189,14 @@ void MainWindow::fillComboBoxWithResolutions(bool isMultiPlane) {
 }
 
 void MainWindow::fillComboBoxWithResolutions(int a) {
+    if(resolutionsComboBox->count() != 0) return;
+    if(m_captureThread){
+        m_captureThread->quit_ = 1;
+        m_captureThread->quit();
+        m_captureThread->wait();
+        delete m_captureThread;
+        m_captureThread = nullptr;
+    }
     fd = open(devicesComboBox->currentText().toLocal8Bit().constData(), O_RDWR);
     if (fd < 0) {
         return;
@@ -178,6 +213,7 @@ void MainWindow::on_open_pb_released()
         m_captureThread->quit();
         m_captureThread->wait();
         delete m_captureThread;
+        m_captureThread = nullptr;
     }
     m_captureThread = new Vvideo(global_M);  
 
@@ -212,7 +248,9 @@ void MainWindow::on_open_pb_released()
 
 void MainWindow::updateFrame(const QImage& frame)
 {
-    ui->Display->setPixmap(QPixmap::fromImage(frame).scaled(
+    QImage frame_ = frame;
+    if(frame_.isNull()) return;
+    ui->Display->setPixmap(QPixmap::fromImage(frame_).scaled(
         ui->Display->width(), ui->Display->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 

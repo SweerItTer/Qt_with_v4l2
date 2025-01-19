@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#define BUFCOUNT 4
 inline int clamp(int value, int min, int max)
 {
     return std::max(min, std::min(value, max));
@@ -19,10 +20,17 @@ Vvideo::Vvideo(const bool& is_M_, QObject *parent)
     : fd(-1), is_M(is_M_)
 {
     type = is_M ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    framebuf = new video_buf_t[BUFCOUNT];
 }
 
 Vvideo::~Vvideo(){
     closeDevice();
+
+    // 释放缓冲区
+    if (framebuf != nullptr) {
+        delete[] framebuf;
+        framebuf = nullptr;
+    }
 }
 
 void Vvideo::run() {
@@ -38,7 +46,7 @@ void Vvideo::run() {
             qWarning() << "Capture frame failed!";
         }
 
-        msleep(20); // 控制帧率，避免资源浪费
+        msleep(15); // 控制帧率，避免资源浪费
         updateFrame();  // 每次捕获后调用 updateFrame 以处理队列中的数据
     }
 }
@@ -84,7 +92,7 @@ int Vvideo::initBuffers(){
     // 3.申请内核缓冲区
     struct v4l2_requestbuffers req;
     std::memset(&req, 0, sizeof(req));
-    req.count = 1;
+    req.count = BUFCOUNT;
     req.type = type;
     req.memory = V4L2_MEMORY_MMAP;
 
@@ -94,96 +102,158 @@ int Vvideo::initBuffers(){
         return -1;
     }
 
+/*
+    if(type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE){
+        for (unsigned int i = 0; i < req.count; ++i) {
+            struct v4l2_buffer buf;
+            struct v4l2_plane planes[BUFCOUNT];
+            
+            memset(&buf, 0, sizeof(buf));
+            memset(planes, 0, sizeof(planes));
+            
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            buf.memory = V4L2_MEMORY_MMAP;
+            buf.index = i;
+            buf.m.planes = planes;
+            buf.length = BUFCOUNT;
+
+            if (ioctl(fd, VIDIOC_QUERYBUF, &buf) == -1) {
+                perror("Failed to query buffer");
+                return -1;
+            }
+
+            for (unsigned int j = 0; j < buf.length; ++j) {
+                framebuf[i].planes[j].length = buf.m.planes[j].length;
+                framebuf[i].planes[j].start = mmap(NULL, buf.m.planes[j].length,
+                                                PROT_READ | PROT_WRITE, MAP_SHARED,
+                                                fd, buf.m.planes[j].m.mem_offset);
+                if (framebuf[i].planes[j].start == MAP_FAILED) {
+                    perror("Failed to map buffer");
+                    return -1;
+                }
+            }
+        }
+    }
+*/
     // 4.映射缓冲区到用户空间    
-    std::memset(&buffer, 0, sizeof(buffer));
-    buffer.type = type;
-    buffer.memory = V4L2_MEMORY_MMAP;
-    buffer.index = 0;
+    for(int num = 0; num < BUFCOUNT; num ++){
+        std::memset(&buffer, 0, sizeof(buffer));
 
-    if (ioctl(fd, VIDIOC_QUERYBUF, &buffer) == -1) {
-        perror("Failed to query buffer");
-        close(fd);
-        return -1;
-    }
+        buffer.type = type;
+        buffer.memory = V4L2_MEMORY_MMAP;
+        buffer.index = num; // 缓冲区索引
 
-    buffer_start = mmap(NULL, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer.m.offset);
-    if (buffer_start == MAP_FAILED) {
-        perror("Failed to map buffer");
-        close(fd);
-        return -1;
+        if (ioctl(fd, VIDIOC_QUERYBUF, &buffer) == -1) {
+            qDebug()<<"Failed to query buffer"<<num;
+            // 在退出前取消映射已映射的缓冲区
+            for (int i = 0; i < num; i++) {
+                munmap(framebuf[i].start, framebuf[i].length);
+            }
+            close(fd);
+            return -1;
+        }
+
+        framebuf[num].start = mmap(NULL, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer.m.offset);
+        if (framebuf[num].start == MAP_FAILED) {
+            perror("Failed to map buffer");
+            // 在退出前取消映射已映射的缓冲区
+            for (int i = 0; i <= num; i++) {
+                if (framebuf[i].start) {
+                    munmap(framebuf[i].start, framebuf[i].length);
+                }
+            }
+            close(fd);
+            return -1;
+        }
+        framebuf[num].length = buffer.length;
+        if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
+            perror("Failed to queue buffer");
+            return -1;
+        }
     }
-    buffer_length = buffer.length;
 
     // 开始捕获
     if (ioctl(fd, VIDIOC_STREAMON, &buffer.type) == -1) {
         perror("Failed to start streaming");
+        // 在退出前取消映射所有缓冲区
+        for (int i = 0; i < BUFCOUNT; i++) {
+            munmap(framebuf[i].start, framebuf[i].length);
+        }
         close(fd);
         return -1;
     }
+
     return 0;
 }
 
-QImage Vvideo::captureFrame()
-{   
-    // 5.开始采集(线程锁)
-    QMutexLocker locker(&mutex); // 加锁 
+QImage Vvideo::captureFrame() {
+    // 5. 开始采集(线程锁)
+    QMutexLocker locker(&mutex); // 加锁
 
-    if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
-        perror("Failed to queue buffer");
-        return QImage();
-    }
+    // 准备缓冲区结构体
+    memset(&buffer, 0, sizeof(buffer));
+    buffer.type = type;
+    buffer.memory = V4L2_MEMORY_MMAP;
 
+// ----------
+    // 出队一个空缓冲区
     if (ioctl(fd, VIDIOC_DQBUF, &buffer) == -1) {
         perror("Failed to dequeue buffer");
         return QImage();
     }
-    
-    // 6.数据处理
-    if (fmt == V4L2_PIX_FMT_MJPEG){
-        QByteArray mjpegData(static_cast<const char*>(buffer_start), buffer.bytesused);
-        QImage image;
-        QBuffer buffer(&mjpegData);
-        buffer.open(QIODevice::ReadOnly);
-        QImageReader reader(&buffer, "JPEG");  // 指定为 JPEG 格式
-        if (reader.read(&image)) {
-            return image;  // 返回解码后的图像
-        } else {
-            qWarning() << "Failed to decode MJPEG frame!";
-            return QImage();  // 返回空图像
-        }
-    }else if (fmt == V4L2_PIX_FMT_JPEG){
-        QByteArray jpegData(static_cast<const char*>(buffer_start), buffer.bytesused);
-        QImage image;
-        if (!image.loadFromData(jpegData, "JPEG")) {
-            qWarning() << "Failed to load JPEG image";
-            return QImage();  // 如果加载失败，返回空图像
-        }
-        return image;  // 返回解码后的图像
 
+    // 数据处理
+    QImage image_;
+    if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
+        MJPG2RGB(image_, framebuf[buffer.index].start, framebuf[buffer.index].length);
     } else if (fmt == V4L2_PIX_FMT_YUYV) {
-        QImage image(w, h, QImage::Format_RGB888);
-        unsigned char* data = static_cast<unsigned char*>(buffer_start);
-
-        for (int y = 0; y < h; ++y) {
-            for (int x = 0; x < w; ++x) {
-                int i = (y * w + x) * 2; // 每两个字节代表一个像素（YUYV格式）
-                int y_val = data[i];
-                int u_val = data[i + 1];
-                int v_val = data[i + 3];  // 注意：YUYV格式中的U和V分别在间隔1和3处
-
-                int r = y_val + 1.370705 * (v_val - 128);
-                int g = y_val - 0.698001 * (v_val - 128) - 0.337633 * (u_val - 128);
-                int b = y_val + 1.732446 * (u_val - 128);
-
-                // 使用clamp避免颜色溢出，确保r, g, b值在[0, 255]范围内
-                image.setPixel(x, y, qRgb(clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255)));
-            }
-        }
-
-        return image;  // 返回转换后的QImage
+        YUYV2RGB(image_, framebuf[buffer.index].start, framebuf[buffer.index].length);
+    } else {
+        // 处理其他格式
     }
 
-    return QImage();
+    // 将缓冲区重新入队以供下一次采集
+    if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
+        perror("Failed to queue buffer");
+    }
+    return image_;
+}
+
+void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length){
+    QImage image(w, h, QImage::Format_RGB888);
+    unsigned char* data_ = static_cast<unsigned char*>(data);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            int i = (y * w + x) * 2; // 每两个字节代表一个像素（YUYV格式）
+            int y_val = data_[i];
+            int u_val = data_[i + 1];
+            int v_val = data_[i + 3];  // 注意：YUYV格式中的U和V分别在间隔1和3处
+
+            int r = y_val + 1.370705 * (v_val - 128);
+            int g = y_val - 0.698001 * (v_val - 128) - 0.337633 * (u_val - 128);
+            int b = y_val + 1.732446 * (u_val - 128);
+
+            // 使用clamp避免颜色溢出，确保r, g, b值在[0, 255]范围内
+            image.setPixel(x, y, qRgb(clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255)));
+        }
+    }
+
+    image_ = image;  // 返回转换后的QImage
+}
+
+void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length){
+    QByteArray mjpegData(static_cast<const char*>(data), length);
+    QImage image;
+    QBuffer buffer(&mjpegData);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer, "JPEG");  // 指定为 JPEG 格式
+    if (reader.read(&image)) {
+        image_ = image;  // 返回解码后的图像
+    } else {
+        qWarning() << "Failed to decode MJPEG frame!";
+        return;  // 返回空图像
+    }
 }
 
 void Vvideo::updateFrame() {
@@ -196,13 +266,18 @@ void Vvideo::updateFrame() {
 
 int Vvideo::closeDevice()
 {
+    frameQueue.clear();
     // 7.停止采集(释放映射)
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to start streaming");
         close(fd);
         return -1;
     }
-    munmap(buffer_start, buffer_length);
+    for (int i = 0; i <= BUFCOUNT; i++) {
+        if (framebuf[i].start) {
+            munmap(framebuf[i].start, framebuf[i].length);
+        }
+    }
     ioctl(fd, VIDIOC_STREAMOFF, type);
     // 8.关闭设备
     close(fd);
