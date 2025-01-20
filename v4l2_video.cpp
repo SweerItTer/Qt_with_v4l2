@@ -9,7 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define BUFCOUNT 4
+#define BUFCOUNT 8
 inline int clamp(int value, int min, int max)
 {
     return std::max(min, std::min(value, max));
@@ -88,8 +88,7 @@ int Vvideo::setFormat(const __u32 &w_, const __u32 &h_, const __u32 &fmt_)
     return 0;
 }
 
-int Vvideo::initBuffers(){
-    // 3.申请内核缓冲区
+int Vvideo::initBuffers() {
     struct v4l2_requestbuffers req;
     std::memset(&req, 0, sizeof(req));
     req.count = BUFCOUNT;
@@ -102,140 +101,117 @@ int Vvideo::initBuffers(){
         return -1;
     }
 
-/*
-    if(type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE){
-        for (unsigned int i = 0; i < req.count; ++i) {
-            struct v4l2_buffer buf;
-            struct v4l2_plane planes[BUFCOUNT];
-            
-            memset(&buf, 0, sizeof(buf));
-            memset(planes, 0, sizeof(planes));
-            
-            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-            buf.memory = V4L2_MEMORY_MMAP;
-            buf.index = i;
-            buf.m.planes = planes;
-            buf.length = BUFCOUNT;
-
-            if (ioctl(fd, VIDIOC_QUERYBUF, &buf) == -1) {
-                perror("Failed to query buffer");
-                return -1;
-            }
-
-            for (unsigned int j = 0; j < buf.length; ++j) {
-                framebuf[i].planes[j].length = buf.m.planes[j].length;
-                framebuf[i].planes[j].start = mmap(NULL, buf.m.planes[j].length,
-                                                PROT_READ | PROT_WRITE, MAP_SHARED,
-                                                fd, buf.m.planes[j].m.mem_offset);
-                if (framebuf[i].planes[j].start == MAP_FAILED) {
-                    perror("Failed to map buffer");
-                    return -1;
-                }
-            }
-        }
-    }
-*/
-    // 4.映射缓冲区到用户空间    
-    for(int num = 0; num < BUFCOUNT; num ++){
+    for (int num = 0; num < BUFCOUNT; num++) {
         std::memset(&buffer, 0, sizeof(buffer));
-
         buffer.type = type;
         buffer.memory = V4L2_MEMORY_MMAP;
-        buffer.index = num; // 缓冲区索引
+        buffer.index = num;
 
         if (ioctl(fd, VIDIOC_QUERYBUF, &buffer) == -1) {
-            qDebug()<<"Failed to query buffer"<<num;
-            // 在退出前取消映射已映射的缓冲区
-            for (int i = 0; i < num; i++) {
-                munmap(framebuf[i].start, framebuf[i].length);
-            }
-            close(fd);
-            return -1;
+            perror("Failed to query buffer");
+            goto cleanup;
         }
 
         framebuf[num].start = mmap(NULL, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer.m.offset);
         if (framebuf[num].start == MAP_FAILED) {
             perror("Failed to map buffer");
-            // 在退出前取消映射已映射的缓冲区
-            for (int i = 0; i <= num; i++) {
-                if (framebuf[i].start) {
-                    munmap(framebuf[i].start, framebuf[i].length);
-                }
-            }
-            close(fd);
-            return -1;
+            goto cleanup;
         }
         framebuf[num].length = buffer.length;
+
         if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
             perror("Failed to queue buffer");
-            return -1;
+            goto cleanup;
         }
     }
 
-    // 开始捕获
     if (ioctl(fd, VIDIOC_STREAMON, &buffer.type) == -1) {
         perror("Failed to start streaming");
-        // 在退出前取消映射所有缓冲区
-        for (int i = 0; i < BUFCOUNT; i++) {
-            munmap(framebuf[i].start, framebuf[i].length);
-        }
-        close(fd);
-        return -1;
+        goto cleanup;
     }
 
     return 0;
+
+cleanup:
+    for (int i = 0; i < BUFCOUNT; i++) {
+        if (framebuf[i].start && framebuf[i].start != MAP_FAILED) {
+            munmap(framebuf[i].start, framebuf[i].length);
+        }
+    }
+    close(fd);
+    return -1;
 }
 
 QImage Vvideo::captureFrame() {
-    // 5. 开始采集(线程锁)
     QMutexLocker locker(&mutex); // 加锁
 
-    // 准备缓冲区结构体
     memset(&buffer, 0, sizeof(buffer));
     buffer.type = type;
     buffer.memory = V4L2_MEMORY_MMAP;
 
-// ----------
-    // 出队一个空缓冲区
+    struct timeval tv;
+    tv.tv_sec = 3;
+    tv.tv_usec = 0;
+
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(fd, &fds);
+
+    int r = select(fd + 1, &fds, NULL, NULL, &tv);
+    if (r == -1) {
+        perror("select");
+        return QImage();
+    } else if (r == 0) {
+        qDebug() << "Timeout waiting for buffer";
+        return QImage();
+    }
+
     if (ioctl(fd, VIDIOC_DQBUF, &buffer) == -1) {
         perror("Failed to dequeue buffer");
         return QImage();
     }
 
-    // 数据处理
     QImage image_;
     if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
         MJPG2RGB(image_, framebuf[buffer.index].start, framebuf[buffer.index].length);
     } else if (fmt == V4L2_PIX_FMT_YUYV) {
         YUYV2RGB(image_, framebuf[buffer.index].start, framebuf[buffer.index].length);
     } else {
-        // 处理其他格式
+        qDebug() << "Unsupported format";
     }
 
-    // 将缓冲区重新入队以供下一次采集
     if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
         perror("Failed to queue buffer");
     }
     return image_;
 }
 
-void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length){
+void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
     QImage image(w, h, QImage::Format_RGB888);
     unsigned char* data_ = static_cast<unsigned char*>(data);
 
+    // 遍历每个像素
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int i = (y * w + x) * 2; // 每两个字节代表一个像素（YUYV格式）
-            int y_val = data_[i];
-            int u_val = data_[i + 1];
-            int v_val = data_[i + 3];  // 注意：YUYV格式中的U和V分别在间隔1和3处
 
+            // YUYV格式：Y, U, Y, V
+            int y_val = data_[i];          // Y值
+            int u_val = data_[i + 1];      // U值
+            int v_val = data_[i + 2];      // V值（修正索引）
+
+            // YUV到RGB的转换公式
             int r = y_val + 1.370705 * (v_val - 128);
             int g = y_val - 0.698001 * (v_val - 128) - 0.337633 * (u_val - 128);
             int b = y_val + 1.732446 * (u_val - 128);
 
             // 使用clamp避免颜色溢出，确保r, g, b值在[0, 255]范围内
-            image.setPixel(x, y, qRgb(clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255)));
+            r = clamp(r, 0, 255);
+            g = clamp(g, 0, 255);
+            b = clamp(b, 0, 255);
+
+            // 使用qRgb将RGB值设置到图像像素
+            image.setPixel(x, y, qRgb(r, g, b));
         }
     }
 

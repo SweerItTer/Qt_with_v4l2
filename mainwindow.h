@@ -34,12 +34,15 @@ private:
     void fillComboBoxWithPixFormats(bool isMultiPlane);
     void fillComboBoxWithResolutions(bool isMultiPlane);
 
+    QString findOldestImage(const QString &folderPath);
 
     Ui::MainWindow *ui;
     QComboBox *devicesComboBox = nullptr;
     QComboBox *pixFormatComboBox = nullptr;
     QComboBox *resolutionsComboBox = nullptr;
     Vvideo *m_captureThread = nullptr;
+
+    QImage frame_;
 
 	int fd = -1;
 };
