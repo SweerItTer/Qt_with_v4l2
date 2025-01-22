@@ -1,5 +1,4 @@
 #include "v4l2_video.h"
-#include <QDebug>
 #include <QImageReader>
 #include <QBuffer>
 
@@ -11,7 +10,7 @@
 
 #include <turbojpeg.h>
 
-#define BUFCOUNT 40
+#define BUFCOUNT 20
 #define FMT_NUM_PLANES 2
 
 inline int clamp(int value, int min, int max)
@@ -20,41 +19,24 @@ inline int clamp(int value, int min, int max)
 }
 
 v4l2_buf_type type;
-Vvideo::Vvideo(const bool& is_M_, QObject *parent)
-    : fd(-1), is_M(is_M_)
+Vvideo::Vvideo(const bool& is_M_, QLabel *Label, QObject *parent)
+    : fd(-1), is_M(is_M_), displayLabel(Label)
 {
     type = is_M ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     framebuf = new video_buf_t[BUFCOUNT];
+
 }
 
 Vvideo::~Vvideo(){
+    quit_ = 1;
+    if (captureThread_.joinable()) captureThread_.join();
+    if (processThread_.joinable()) processThread_.join();
     closeDevice();
 
     // 释放缓冲区
     if (framebuf != nullptr) {
         delete[] framebuf;
         framebuf = nullptr;
-    }
-}
-
-void Vvideo::run() {
-    QImage frame;
-    // 进入线程主循环
-    while (!quit_) {
-        frame = captureFrame();  // 捕获一帧图像
-
-        if (!frame.isNull()) {
-            QMutexLocker locker(&mutex);  // 锁定队列
-            if( frameQueue.length() <= 40 )
-                frameQueue.enqueue(frame);    // 将帧添加到队列
-            else continue;
-        } else {
-            // 捕获失败，可以选择继续循环或退出
-            qWarning() << "Capture frame failed!";
-        }
-
-        msleep(15); // 控制帧率，避免资源浪费
-        updateFrame();  // 每次捕获后调用 updateFrame 以处理队列中的数据
     }
 }
 
@@ -148,12 +130,12 @@ int Vvideo::initSinglePlaneBuffers(){
             goto cleanup;
         }
 
-        framebuf[num].start[0] = mmap(NULL, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer.m.offset);
-        if (framebuf[num].start == MAP_FAILED) {
+        framebuf[num].fm[0].start = mmap(NULL, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buffer.m.offset);
+        if (framebuf[num].fm[0].start == MAP_FAILED) {
             perror("Failed to map buffer");
             goto cleanup;
         }
-        framebuf[num].length[0] = buffer.length;
+        framebuf[num].fm[0].length = buffer.length;
 
         if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
             perror("Failed to queue buffer");
@@ -170,8 +152,8 @@ int Vvideo::initSinglePlaneBuffers(){
 
 cleanup:
     for (int i = 0; i < BUFCOUNT; i++) {
-        if (framebuf[i].start && framebuf[i].start != MAP_FAILED) {
-            munmap(framebuf[i].start, framebuf[i].length[0]);
+        if (framebuf[i].fm[0].start && framebuf[i].fm[0].start != MAP_FAILED) {
+            munmap(framebuf[i].fm[0].start, framebuf[i].fm[0].length);
         }
     }
     close(fd);
@@ -211,17 +193,17 @@ int Vvideo::initMultiPlaneBuffers() {
         framebuf[num].plane_count = buffer.length;  // 实际平面数量
 
         for (int plane = 0; plane < framebuf[num].plane_count; plane++) {
-            framebuf[num].length[plane] = buffer.m.planes[plane].length;
-            framebuf[num].start[plane] = mmap(
-                NULL, framebuf[num].length[plane], PROT_READ | PROT_WRITE,
+            framebuf[num].fm[plane].length = buffer.m.planes[plane].length;
+            framebuf[num].fm[plane].start = mmap(
+                NULL, framebuf[num].fm[plane].length, PROT_READ | PROT_WRITE,
                 MAP_SHARED, fd, buffer.m.planes[plane].m.mem_offset);
 
-            if (framebuf[num].start[plane] == MAP_FAILED) {
+            if (framebuf[num].fm[plane].start == MAP_FAILED) {
                 perror("Failed to map plane buffer");
                 for (int j = 0; j < plane; j++) {
-                    if (framebuf[num].start[j] != MAP_FAILED) {
-                        munmap(framebuf[num].start[j], framebuf[num].length[j]);
-                        framebuf[num].start[j] = nullptr;
+                    if (framebuf[num].fm[j].start != MAP_FAILED) {
+                        munmap(framebuf[num].fm[j].start, framebuf[num].fm[j].length);
+                        framebuf[num].fm[j].start = nullptr;
                     }
                 }
                 goto cleanup;
@@ -257,73 +239,136 @@ int Vvideo::initMultiPlaneBuffers() {
 cleanup:
     for (int i = 0; i < req.count; i++) {
         for (int plane = 0; plane < framebuf[i].plane_count; plane++) {
-            if (framebuf[i].start[plane] && framebuf[i].start[plane] != MAP_FAILED) {
-                munmap(framebuf[i].start[plane], framebuf[i].length[plane]);
+            if (framebuf[i].fm[plane].start && framebuf[i].fm[plane].start != MAP_FAILED) {
+                munmap(framebuf[i].fm[plane].start, framebuf[i].fm[plane].length);
             }
         }
     }
     close(fd);
     return -1;
 }
-QImage Vvideo::captureFrame() {
-    struct v4l2_plane planes[FMT_NUM_PLANES];
-    memset(planes, 0, sizeof(planes));
-    memset(&buffer, 0, sizeof(buffer));
-    buffer.type = type;
-    buffer.memory = V4L2_MEMORY_MMAP;
 
-    if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
-        buffer.m.planes = planes;
-        buffer.length = FMT_NUM_PLANES;
+
+
+int Vvideo::captureFrame() {
+    while(!quit_)
+    {
+        if (frameQueue.size() > 30) {
+            qWarning() << "Frame queue full, dropping frame.";
+            frameQueue.clear();
+            continue;
+        }
+        struct v4l2_plane planes[FMT_NUM_PLANES];
+        memset(planes, 0, sizeof(planes));
+        memset(&buffer, 0, sizeof(buffer));
+        buffer.type = type;
+        buffer.memory = V4L2_MEMORY_MMAP;
+
+        if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+            buffer.m.planes = planes;
+            buffer.length = FMT_NUM_PLANES;
+        }
+
+        struct timeval tv;
+        tv.tv_sec = 3;
+        tv.tv_usec = 0;
+
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+
+        int r = select(fd + 1, &fds, NULL, NULL, &tv);
+        if (r == -1) {
+            perror("select");
+            return -1;
+        } else if (r == 0) {
+            qDebug() << "Timeout waiting for buffer";
+            continue;
+        }
+        // 出列
+        if (ioctl(fd, VIDIOC_DQBUF, &buffer) == -1) {
+            perror("Failed to dequeue buffer");
+            return -1;
+        }
+
+        video_buf_t videoBuffer;
+        memset(&videoBuffer, 0, sizeof(video_buf_t));
+        if(V4L2_BUF_TYPE_SLICED_VBI_CAPTURE == type){
+            videoBuffer.plane_count = buffer.length;
+        } else {
+            videoBuffer.plane_count = 1;
+        }
+
+        for (int plane = 0; plane < videoBuffer.plane_count; ++plane) {
+            
+            if (V4L2_BUF_TYPE_VIDEO_CAPTURE == type) {
+                videoBuffer.fm[plane].length = buffer.length;
+            } else {
+                videoBuffer.fm[plane].length = planes[plane].bytesused;
+            }
+            size_t length = videoBuffer.fm[plane].length;
+            // 分配并复制数据到独立的缓冲区
+            videoBuffer.fm[plane].start = malloc(length);
+            if (videoBuffer.fm[plane].start == nullptr) {
+                perror("Failed to allocate memory for frame");
+                return -1; // 或者适当处理错误
+            }
+            memcpy(videoBuffer.fm[plane].start, framebuf[buffer.index].fm[plane].start, length);       
+        }
+
+        // 将 videoBuffer 入队
+        frameQueue.enqueue(videoBuffer);
+
+        // 入列
+        if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
+            perror("Failed to queue buffer");
+        }
+
     }
-    QMutexLocker locker(&mutex); // 加锁
+    return 0;
+}
 
-    struct timeval tv;
-    tv.tv_sec = 3;
-    tv.tv_usec = 0;
+void Vvideo::processFrame(QLabel *displayLabel) {
+    while (!quit_) {
+        video_buf_t videoBuffer;
+        // 从队列中取出帧
+        if (!frameQueue.try_dequeue(videoBuffer)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
+            continue;
+        }
 
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(fd, &fds);
-
-    int r = select(fd + 1, &fds, NULL, NULL, &tv);
-    if (r == -1) {
-        perror("select");
-        return QImage();
-    } else if (r == 0) {
-        qDebug() << "Timeout waiting for buffer";
-        return QImage();
-    }
-
-    if (ioctl(fd, VIDIOC_DQBUF, &buffer) == -1) {
-        perror("Failed to dequeue buffer");
-        return QImage();
-    }
-
-    QImage image_;
-    if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
-        for (int plane = 0; plane < buffer.length; plane++) {
-            if (planes[plane].bytesused == 0) continue;
+        QImage image_;
+        
+        if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+            if (videoBuffer.fm[0].length == 0) continue;
 
             if (fmt == V4L2_PIX_FMT_NV12) {
-                NV12ToRGB(image_, framebuf[buffer.index].start[0], planes[0].bytesused,
-                          framebuf[buffer.index].start[1], planes[1].bytesused);
+                NV12ToRGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length,
+                        videoBuffer.fm[1].start, videoBuffer.fm[1].length);
             } else if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
-                MJPG2RGB(image_, framebuf[buffer.index].start[plane], planes[plane].bytesused);
+                MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
             } else if (fmt == V4L2_PIX_FMT_YUYV) {
-                YUYV2RGB(image_, framebuf[buffer.index].start[plane], planes[plane].bytesused);
+                YUYV2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
             } else {
                 qDebug() << "Unsupported format";
             }
+        } else {
+            MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
         }
-    } else {
-        MJPG2RGB(image_, framebuf[buffer.index].start[0], framebuf[buffer.index].length[0]);
-    }
 
-    if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
-        perror("Failed to queue buffer");
+        for (int plane = 0; plane < videoBuffer.plane_count; plane++) {
+            if (videoBuffer.fm[plane].start != nullptr) {
+                free(videoBuffer.fm[plane].start);
+            }
+        }
+
+        QMetaObject::invokeMethod(displayLabel, 
+            [image_, displayLabel]() {
+                displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
+                    displayLabel->width(), displayLabel->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            }
+        , Qt::QueuedConnection);
     }
-    return image_;
 }
 
 void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
@@ -361,6 +406,7 @@ void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
     image_ = image;  // 返回转换后的 QImage
 }
 
+// 低效算法
 // void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length){
 //     QByteArray mjpegData(static_cast<const char*>(data), length);
 //     QImage image;
@@ -381,7 +427,6 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
         qWarning() << "Failed to initialize TurboJPEG decompressor";
         return;
     }
-
     int width, height, subsamp, colorspace;
     if (tjDecompressHeader3(handle, static_cast<unsigned char*>(data), length, 
                             &width, &height, &subsamp, &colorspace) != 0) {
@@ -389,7 +434,6 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
         tjDestroy(handle);
         return;
     }
-
     QImage image(width, height, QImage::Format_RGB888);
     if (tjDecompress2(handle, static_cast<unsigned char*>(data), length,
                       image.bits(), width, 0, height, TJPF_RGB, TJFLAG_FASTDCT) != 0) {
@@ -397,7 +441,6 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
         tjDestroy(handle);
         return;
     }
-
     tjDestroy(handle);
     image_ = image;  // 返回解码后的图像
 }
@@ -427,17 +470,9 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
     image_ = image;
 }
 
-void Vvideo::updateFrame() {
-    QMutexLocker locker(&mutex);  // 锁定队列
-    if (!frameQueue.isEmpty()) {
-        QImage frame = frameQueue.dequeue();  // 从队列中取出一帧
-        emit frameAvailable(frame);  // 发射信号，通知主界面更新显示
-    }
-}
-
 int Vvideo::closeDevice() {
-    frameQueue.clear();
-
+    frameQueue.clear(); // 清空队列
+    qDebug() << frameQueue.size();
     // 停止采集并释放映射
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to stop streaming");
@@ -449,18 +484,18 @@ int Vvideo::closeDevice() {
         // 多平面缓冲区的解映射
         for (int i = 0; i < BUFCOUNT; i++) {
             for (int plane = 0; plane < framebuf[i].plane_count; plane++) {
-                if (framebuf[i].start[plane] && framebuf[i].start[plane] != MAP_FAILED) {
-                    munmap(framebuf[i].start[plane], framebuf[i].length[plane]);
-                    framebuf[i].start[plane] = nullptr; // 释放映射后，避免再次操作
+                if (framebuf[i].fm[plane].start && framebuf[i].fm[plane].start != MAP_FAILED) {
+                    munmap(framebuf[i].fm[plane].start, framebuf[i].fm[plane].length);
+                    framebuf[i].fm[plane].start = nullptr; // 释放映射后，避免再次操作
                 }
             }
         }
     } else {
         // 单平面缓冲区的解映射
         for (int i = 0; i < BUFCOUNT; i++) {  // 修正了 <= BUFCOUNT 的问题
-            if (framebuf[i].start[0]) {
-                munmap(framebuf[i].start[0], framebuf[i].length[0]);
-                framebuf[i].start[0] = nullptr; // 防止重复操作
+            if (framebuf[i].fm[0].start) {
+                munmap(framebuf[i].fm[0].start, framebuf[i].fm[0].length);
+                framebuf[i].fm[0].start = nullptr; // 防止重复操作
             }
         }
     }

@@ -3,7 +3,7 @@
 project(Test VERSION 0.1 LANGUAGES CXX)
 
 # 是否使用交叉编译工具链的开关
-if (1)
+if (0)
     message(STATUS "Using cross-compilation toolchain.")
 
     # 使用工具链文件
@@ -20,6 +20,7 @@ if (1)
     
 else()
     message(STATUS "Not using cross-compilation toolchain.")
+    include_directories(/usr/include/turbojpeg)
 endif()
 
 
@@ -43,7 +44,8 @@ set(PROJECT_SOURCES
         mainwindow.ui
         v4l2_video.cpp
         v4l2_video.h
-        v4l2_thread.cpp
+        queue_.h
+        albumwindow.h
         rec.qrc
 )
 
@@ -51,5 +53,5 @@ add_executable(QC_e
     ${PROJECT_SOURCES}
 )
 
-target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg)
+target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg pthread )
 

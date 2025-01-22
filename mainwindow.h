@@ -3,8 +3,11 @@
 
 #include <QWidget>
 #include <QComboBox>
-
 #include "v4l2_video.h"
+
+#include <memory>
+#include <pthread.h>
+using namespace std;
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class MainWindow; }
@@ -22,11 +25,10 @@ private slots:
     void on_takepic_pressed();
     void on_takepic_released();
     void on_open_pb_released();
+    void on_showimg_released();
 
     void on_devices_currentIndexChanged(int index);
     void fillComboBoxWithResolutions(int a);
-
-    void updateFrame(const QImage& frame);
 
 private:
     QString fourccToString(__u32 fourcc) {
@@ -43,15 +45,23 @@ private:
     void fillComboBoxWithResolutions(bool isMultiPlane);
 
     QString findOldestImage(const QString &folderPath);
-
+    void killThread();
+    void setIcon(QString &fileName);
+    
     Ui::MainWindow *ui;
     QComboBox *devicesComboBox = nullptr;
     QComboBox *pixFormatComboBox = nullptr;
     QComboBox *resolutionsComboBox = nullptr;
-    Vvideo *m_captureThread = nullptr;
+    QLabel *displayLabel = nullptr;
+    std::unique_ptr<Vvideo> m_captureThread; // Vvideo 对象指针
+    std::thread threadHandle;               // 标准库线程对象
 
     QImage frame_;
 
 	int fd = -1;
+
+    const int REFERENCE_WIDTH = 1920;
+    const int REFERENCE_HEIGHT = 1080;
+
 };
 #endif // MAINWINDOW_H

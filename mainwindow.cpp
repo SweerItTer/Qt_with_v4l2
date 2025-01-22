@@ -1,4 +1,5 @@
 ﻿#include "mainwindow.h"
+#include "albumwindow.h"
 #include "./ui_mainwindow.h"
 #include <QDir>
 #include <QString>
@@ -6,6 +7,7 @@
 #include <QMessageBox>
 #include <QDateTime>
 #include <QImageWriter>
+#include <QScreen>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -32,33 +34,55 @@ MainWindow::MainWindow(QWidget *parent)
 	ui->takepic->setIconSize(QSize(40, 40)); // 设置图标大小
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
 
+    // 获取主屏幕
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        qWarning() << "Failed to get primary screen.";
+        return;
+    }
+
     ui->Display->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
 
     QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
-    ui->showimg->setStyleSheet("border-image:url("+fileName+")");
+    setIcon(fileName);
 
 	devicesComboBox = ui->devices;
 	pixFormatComboBox = ui->pixformat;
 	resolutionsComboBox = ui->resolutions;
+    displayLabel = ui->Display;
 
 	fillComboBoxWithV4L2Devices();
 
 	connect(devicesComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(on_devices_currentIndexChanged(int)));
     connect(pixFormatComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(fillComboBoxWithResolutions(int)));
+    connect(screen, &QScreen::geometryChanged, this, 
+        [this]() {
+            QScreen *screen = QGuiApplication::primaryScreen();
+            QRect screenGeometry = screen->geometry();
+            int screenWidth = screenGeometry.width();
+            int screenHeight = screenGeometry.height();
+
+            qreal scaleX = static_cast<qreal>(screenWidth) / REFERENCE_WIDTH;
+            qreal scaleY = static_cast<qreal>(screenHeight) / REFERENCE_HEIGHT;
+            qreal scale = qMin(scaleX, scaleY);
+
+            this->setFixedSize(scale * REFERENCE_WIDTH, scale * REFERENCE_HEIGHT);
+
+            QFont font = this->font();
+            font.setPointSizeF(font.pointSizeF() * scale);
+            this->setFont(font);
+
+            qDebug() << "UI scaled with factor:" << scale;
+    });
+
 }
 MainWindow::~MainWindow()
 {
 	if(fd != -1){
 		::close(fd);
 	}
-    if(m_captureThread){
-        m_captureThread->quit_ = 1;
-        m_captureThread->quit();
-        m_captureThread->wait();
-        delete m_captureThread;
-        m_captureThread = nullptr;
-    }
+    killThread();
     delete devicesComboBox;
     delete pixFormatComboBox;
     delete resolutionsComboBox;
@@ -132,13 +156,7 @@ void MainWindow::fillComboBoxWithV4L2Devices() {
 void MainWindow::on_devices_currentIndexChanged(int index) {
     disconnect(pixFormatComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(fillComboBoxWithResolutions(int)));
 
-    if(m_captureThread){
-        m_captureThread->quit_ = 1;
-        m_captureThread->quit();
-        m_captureThread->wait();
-        delete m_captureThread;
-        m_captureThread = nullptr;
-    }
+    killThread();
     QString devicePath = devicesComboBox->itemData(index).toString();
 
     auto it = std::find_if(v4l2Devices.begin(), v4l2Devices.end(),
@@ -233,13 +251,7 @@ void MainWindow::fillComboBoxWithResolutions(bool isMultiPlane) {
 }
 // 重载槽函数
 void MainWindow::fillComboBoxWithResolutions(int a) {
-    if(m_captureThread){
-        m_captureThread->quit_ = 1;
-        m_captureThread->quit();
-        m_captureThread->wait();
-        delete m_captureThread;
-        m_captureThread = nullptr;
-    }
+    killThread();
     fd = open(devicesComboBox->currentText().toLocal8Bit().constData(), O_RDWR);
     if (fd < 0) {
         return;
@@ -250,15 +262,10 @@ void MainWindow::fillComboBoxWithResolutions(int a) {
 }
 // 打开摄像头
 void MainWindow::on_open_pb_released()
-{
-    if(m_captureThread){
-        m_captureThread->quit_ = 1;
-        m_captureThread->quit();
-        m_captureThread->wait();
-        delete m_captureThread;
-        m_captureThread = nullptr;
-    }
-    m_captureThread = new Vvideo(global_M);  
+{   
+    killThread();
+    // 创建新的 Vvideo 对象
+    m_captureThread = std::unique_ptr<Vvideo>(new Vvideo(global_M, displayLabel));
 
     // 初始化V4L2设备
     if (m_captureThread->openDevice(devicesComboBox->currentText()) < 0) {
@@ -284,17 +291,9 @@ void MainWindow::on_open_pb_released()
     }
     
     // 开始视频流
-    m_captureThread->start();    
-    connect(m_captureThread, &Vvideo::frameAvailable, this, &MainWindow::updateFrame, Qt::UniqueConnection);
+    threadHandle = std::thread(&Vvideo::run, m_captureThread.get());
+    // connect(m_captureThread, &Vvideo::frameAvailable, this, &MainWindow::updateFrame, Qt::UniqueConnection);
 
-}
-// 更新图像
-void MainWindow::updateFrame(const QImage& frame)
-{
-    frame_ = frame;
-    if(frame_.isNull()) return;
-    ui->Display->setPixmap(QPixmap::fromImage(frame_).scaled(
-        ui->Display->width(), ui->Display->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
 }
 // 美化UI用(按钮图标更新)
 void MainWindow::on_takepic_pressed()
@@ -306,14 +305,20 @@ void MainWindow::on_takepic_released()
 {
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
     
-    QImage img = frame_;
+    const QPixmap *pixmap = displayLabel->pixmap();
+    if (!pixmap){
+        qDebug() << "Label pixmap is null.";
+        return;
+    }
+    QImage img = pixmap->toImage();
     // 获取当前时间
     QDateTime currentDateTime = QDateTime::currentDateTime();
-    // 将当前时间格式化为字符串（年月日时分秒）
-    QString dateTimeString = currentDateTime.toString("yyyyMMddhhmmss");
+    // 获取当前的时间戳（精确到毫秒）
+    QString dateTimeString = currentDateTime.toString("yyyyMMddhhmmsszzz");  // 添加毫秒（zzz）
     QString path = QCoreApplication::applicationDirPath() + "/photos/";
     // 创建文件名
     QString fileName = path + dateTimeString + ".png";
+
     QImageWriter writer;
     writer.setFileName(fileName); // 使用基于当前时间的文件名
     writer.setFormat("png"); // 设置保存格式为PNG
@@ -330,8 +335,18 @@ void MainWindow::on_takepic_released()
         qDebug() << "Failed to save image:" << writer.errorString();
     } else {
         qDebug() << "Image saved successfully to" << fileName;
-        ui->showimg->setStyleSheet("border-image:url("+fileName+")");
+        setIcon(fileName);
     }
+}
+// 相册
+void MainWindow::on_showimg_released()
+{
+    AlbumWindow *albumWindow = new AlbumWindow(QCoreApplication::applicationDirPath() + "/photos/"); // 指定图片文件夹路径
+    albumWindow->show();
+    connect(albumWindow, &QObject::destroyed, this, [this]() {
+        QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
+        setIcon(fileName);
+    });
 }
 // 用于展示最新保存的图片
 QString MainWindow::findOldestImage(const QString &folderPath) {
@@ -365,4 +380,28 @@ QString MainWindow::findOldestImage(const QString &folderPath) {
 
     // 返回创建时间最早的图片的完整路径
     return oldestImage.absoluteFilePath();
+}
+// 关闭线程
+void MainWindow::killThread(){
+    if(m_captureThread){
+        m_captureThread->stop();
+        // 等待线程退出
+        if (threadHandle.joinable()) {
+            threadHandle.join();
+        }
+        // 销毁 Vvideo 对象
+        m_captureThread.reset();
+    }
+}
+// 设置相册按钮icon
+void MainWindow::setIcon(QString &fileName){
+    QPixmap pixmap(fileName);
+    if(pixmap.isNull()){
+        ui->showimg->setIcon(QIcon());
+        return;
+    } 
+    QPixmap scaledPixmap = pixmap.scaled(ui->showimg->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QIcon icon(scaledPixmap);
+    ui->showimg->setIcon(icon);
+    ui->showimg->setIconSize(scaledPixmap.size());
 }
