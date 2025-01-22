@@ -17,7 +17,7 @@ if (1)
 
     # 设置库路径
     link_directories(${CMAKE_SYSROOT}/usr/lib)
-
+    
 else()
     message(STATUS "Not using cross-compilation toolchain.")
 endif()
@@ -43,6 +43,7 @@ set(PROJECT_SOURCES
         mainwindow.ui
         v4l2_video.cpp
         v4l2_video.h
+        v4l2_thread.cpp
         rec.qrc
 )
 
@@ -50,5 +51,5 @@ add_executable(QC_e
     ${PROJECT_SOURCES}
 )
 
-target_link_libraries(QC_e PRIVATE Qt5::Widgets)
+target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg)
 

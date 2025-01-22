@@ -29,6 +29,14 @@ private slots:
     void updateFrame(const QImage& frame);
 
 private:
+    QString fourccToString(__u32 fourcc) {
+        return QString("%1%2%3%4")
+            .arg(static_cast<char>(fourcc & 0xFF))
+            .arg(static_cast<char>((fourcc >> 8) & 0xFF))
+            .arg(static_cast<char>((fourcc >> 16) & 0xFF))
+            .arg(static_cast<char>((fourcc >> 24) & 0xFF));
+    }
+
     // 填充下拉框
     void fillComboBoxWithV4L2Devices();
     void fillComboBoxWithPixFormats(bool isMultiPlane);

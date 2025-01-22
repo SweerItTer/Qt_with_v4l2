@@ -35,7 +35,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->Display->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
 
-    QString fileName = findOldestImage("./save/");
+    QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
     ui->showimg->setStyleSheet("border-image:url("+fileName+")");
 
 	devicesComboBox = ui->devices;
@@ -173,9 +173,12 @@ void MainWindow::fillComboBoxWithPixFormats(bool isMultiPlane) {
     
 
     while (ioctl(fd, VIDIOC_ENUM_FMT, &fmt) == 0) {
-        pixFormatComboBox->addItem(QString::fromUtf8(reinterpret_cast<const char*>(fmt.description)), fmt.pixelformat);
+        QString pixFmtStr = fourccToString(fmt.pixelformat);
+        pixFormatComboBox->addItem(pixFmtStr, fmt.pixelformat); // 将格式代码作为值存储
+        qDebug() << "Found pixel format:" << pixFmtStr;
         fmt.index++;
     }
+
     if (errno != EINVAL) {  // 如果错误不是因为格式索引超出范围
         qDebug() << "Error enumerating formats:" << strerror(errno);
         // 这里可以添加更多的错误处理逻辑，比如弹出错误提示或者记录日志
@@ -192,7 +195,7 @@ void MainWindow::fillComboBoxWithResolutions(bool isMultiPlane) {
         if (frmsize.type == V4L2_FRMSIZE_TYPE_DISCRETE) {        // 离散的分辨率
             QString resolution = QString::number(frmsize.discrete.width) + "x" + QString::number(frmsize.discrete.height);
             resolutionsComboBox->addItem(resolution);
-            qDebug() << "Found resolution:" << resolution;
+            // qDebug() << "Found resolution:" << resolution;
         } else if (frmsize.type == V4L2_FRMSIZE_TYPE_STEPWISE) {// 步进类型的分辨率 IMX415
             int minWidth = frmsize.stepwise.min_width;
             int minHeight = frmsize.stepwise.min_height;
@@ -224,6 +227,8 @@ void MainWindow::fillComboBoxWithResolutions(bool isMultiPlane) {
     if (errno != EINVAL) {  // 如果错误不是因为格式索引超出范围
         qDebug() << "Error enumerating resolutions:" << strerror(errno);
         // 这里可以添加更多的错误处理逻辑，比如弹出错误提示或者记录日志
+        resolutionsComboBox->addItem("1280x720");
+        resolutionsComboBox->addItem("1920x1080");
     }
 }
 // 重载槽函数
@@ -306,15 +311,16 @@ void MainWindow::on_takepic_released()
     QDateTime currentDateTime = QDateTime::currentDateTime();
     // 将当前时间格式化为字符串（年月日时分秒）
     QString dateTimeString = currentDateTime.toString("yyyyMMddhhmmss");
+    QString path = QCoreApplication::applicationDirPath() + "/photos/";
     // 创建文件名
-    QString fileName = "./save/"+ dateTimeString + ".png";
+    QString fileName = path + dateTimeString + ".png";
     QImageWriter writer;
     writer.setFileName(fileName); // 使用基于当前时间的文件名
     writer.setFormat("png"); // 设置保存格式为PNG
 
-    QDir saveDir("./save/");
+    QDir saveDir(path);
     if (!saveDir.exists()) {
-        if (!saveDir.mkpath("./save/")) {
+        if (!saveDir.mkpath(path)) {
             qDebug() << "Failed to create directory ./save/";
             return; // 如果无法创建目录，则退出函数
         }
