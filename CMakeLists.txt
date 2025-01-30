@@ -53,5 +53,5 @@ add_executable(QC_e
     ${PROJECT_SOURCES}
 )
 
-target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg pthread )
+target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg pthread -l:libyuv.a)
 

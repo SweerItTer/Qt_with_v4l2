@@ -251,13 +251,16 @@ cleanup:
 
 
 int Vvideo::captureFrame() {
+    video_buf_t videoBuffer;
     while(!quit_)
     {
+        // 限制缓存队列长度
         if (frameQueue.size() > 30) {
             qWarning() << "Frame queue full, dropping frame.";
-            frameQueue.clear();
             continue;
         }
+
+        // 初始化结构体
         struct v4l2_plane planes[FMT_NUM_PLANES];
         memset(planes, 0, sizeof(planes));
         memset(&buffer, 0, sizeof(buffer));
@@ -269,8 +272,9 @@ int Vvideo::captureFrame() {
             buffer.length = FMT_NUM_PLANES;
         }
 
+        // 监视文件超时
         struct timeval tv;
-        tv.tv_sec = 3;
+        tv.tv_sec = 3; // 3秒
         tv.tv_usec = 0;
 
         fd_set fds;
@@ -290,8 +294,8 @@ int Vvideo::captureFrame() {
             perror("Failed to dequeue buffer");
             return -1;
         }
-
-        video_buf_t videoBuffer;
+        
+        // 清空上一帧数据
         memset(&videoBuffer, 0, sizeof(video_buf_t));
         if(V4L2_BUF_TYPE_SLICED_VBI_CAPTURE == type){
             videoBuffer.plane_count = buffer.length;
@@ -299,6 +303,7 @@ int Vvideo::captureFrame() {
             videoBuffer.plane_count = 1;
         }
 
+        // 复制帧数据(mmap入队后会清空数据)
         for (int plane = 0; plane < videoBuffer.plane_count; ++plane) {
             
             if (V4L2_BUF_TYPE_VIDEO_CAPTURE == type) {
@@ -316,7 +321,7 @@ int Vvideo::captureFrame() {
             memcpy(videoBuffer.fm[plane].start, framebuf[buffer.index].fm[plane].start, length);       
         }
 
-        // 将 videoBuffer 入队
+        // 将 videoBuffer 入帧队列
         frameQueue.enqueue(videoBuffer);
 
         // 入列
@@ -329,18 +334,17 @@ int Vvideo::captureFrame() {
 }
 
 void Vvideo::processFrame(QLabel *displayLabel) {
+    video_buf_t videoBuffer;
+    QImage image_;
     while (!quit_) {
-        video_buf_t videoBuffer;
         // 从队列中取出帧
         if (!frameQueue.try_dequeue(videoBuffer)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
-
-        QImage image_;
         
+        if (videoBuffer.fm[0].length == 0) continue;
         if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
-            if (videoBuffer.fm[0].length == 0) continue;
 
             if (fmt == V4L2_PIX_FMT_NV12) {
                 NV12ToRGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length,
@@ -352,16 +356,18 @@ void Vvideo::processFrame(QLabel *displayLabel) {
             } else {
                 qDebug() << "Unsupported format";
             }
-        } else {
+        } else {// 测试平台仅有MJPG格式可以使用
             MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
         }
 
+        // 释放处理完成后的数据
         for (int plane = 0; plane < videoBuffer.plane_count; plane++) {
             if (videoBuffer.fm[plane].start != nullptr) {
                 free(videoBuffer.fm[plane].start);
             }
         }
 
+        // 显示到label
         QMetaObject::invokeMethod(displayLabel, 
             [image_, displayLabel]() {
                 displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
