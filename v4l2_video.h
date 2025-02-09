@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <atomic>
 
+
+#include "libyuv.h"
 #include "queue_.h"
 
 #include <QObject>
@@ -36,8 +38,8 @@ typedef struct __video_buffer {
 
 
 
-class Vvideo
-{
+class Vvideo : public QObject {
+    Q_OBJECT    // 信号与槽必要宏
 public:
     
     explicit Vvideo(const bool& is_M_, QLabel *Label, QObject *parent=nullptr);
@@ -58,30 +60,29 @@ public:
         qDebug()<<"Thread exited.";
     }
     
-
     int openDevice(const QString& deviceName);
     
     int setFormat(const __u32& w_, const __u32&h_, const __u32& fmt_);
     int initBuffers();
-    
+
+    void updateImage();
+    void takePic(QImage &img);
+    int closeDevice();
+  
     void stop() {
         quit_ = true;  // 设置退出标志
-    }
-
-    int closeDevice();
-    
+    }  
 private:
     int fd;
     bool is_M;
     __u32 w,h,fmt;
-    std::atomic<bool> quit_{false};  // 使用 atomic 防止竞态
-    QMutex mutex;              // 线程锁
+    std::atomic<bool> quit_{false};  // 使用 atomic 防止竞态 退出标志
+    // QMutex mutex;              /* 线程锁交由queue处理 */
     std::thread captureThread_;
     std::thread processThread_;
-    QLabel *displayLabel;
-    frame_data fdate;
-    SafeQueue<video_buf_t> frameQueue; // 帧队列
-    
+    QLabel *displayLabel = nullptr;
+    SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
+    SafeQueue<QImage> QImageframes;    // 处理后帧队列
     struct v4l2_buffer buffer;
     video_buf_t *framebuf = nullptr; // 映射
     

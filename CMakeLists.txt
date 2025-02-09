@@ -3,8 +3,9 @@
 project(Test VERSION 0.1 LANGUAGES CXX)
 
 # 是否使用交叉编译工具链的开关
-if (0)
+if (1)
     message(STATUS "Using cross-compilation toolchain.")
+    add_definitions(-DRV1126)
 
     # 使用工具链文件
     include(CMakeForceCompiler) # CMake 3.6 版本之前
@@ -22,7 +23,7 @@ else()
     message(STATUS "Not using cross-compilation toolchain.")
     include_directories(/usr/include/turbojpeg)
 endif()
-
+include_directories(/opt/libyuv/include/)
 
 
 set(CMAKE_INCLUDE_CURRENT_DIR ON)

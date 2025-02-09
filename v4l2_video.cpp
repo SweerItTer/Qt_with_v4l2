@@ -10,7 +10,7 @@
 
 #include <turbojpeg.h>
 
-#define BUFCOUNT 20
+#define BUFCOUNT 24
 #define FMT_NUM_PLANES 2
 
 inline int clamp(int value, int min, int max)
@@ -255,8 +255,8 @@ int Vvideo::captureFrame() {
     while(!quit_)
     {
         // 限制缓存队列长度
-        if (frameQueue.size() > 30) {
-            qWarning() << "Frame queue full, dropping frame.";
+        if (frameQueue.size() >= 14) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
 
@@ -335,97 +335,61 @@ int Vvideo::captureFrame() {
 
 void Vvideo::processFrame(QLabel *displayLabel) {
     video_buf_t videoBuffer;
-    QImage image_;
+    uint wait = 0;
     while (!quit_) {
+        while(QImageframes.size() > 29) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 等待ui更新label
+            wait ++;
+            if (wait > 30) // 30次等待超时,UI更新出现问题
+            {
+                qDebug() << "UI update frame failed.";
+                wait = 0;
+                continue;
+            }
+        }
         // 从队列中取出帧
         if (!frameQueue.try_dequeue(videoBuffer)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
-        
+        // 若数据长度为0,忽略
         if (videoBuffer.fm[0].length == 0) continue;
-        if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
 
-            if (fmt == V4L2_PIX_FMT_NV12) {
-                NV12ToRGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length,
-                        videoBuffer.fm[1].start, videoBuffer.fm[1].length);
-            } else if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
+        // 添加数据处理部分到线程池
+        {
+            QImage image_ = QImage(w, h, QImage::Format_RGB888);
+            if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+
+                if (fmt == V4L2_PIX_FMT_NV12) {
+                    NV12ToRGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length,
+                            videoBuffer.fm[1].start, videoBuffer.fm[1].length);
+                } else if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
+                    MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
+                } else if (fmt == V4L2_PIX_FMT_YUYV) {
+                    YUYV2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
+                } else {
+                    qDebug() << "Unsupported format";
+                    image_ = QImage();
+                }
+            } else {// 测试平台仅有MJPG格式可以使用
                 MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
-            } else if (fmt == V4L2_PIX_FMT_YUYV) {
-                YUYV2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
-            } else {
-                qDebug() << "Unsupported format";
             }
-        } else {// 测试平台仅有MJPG格式可以使用
-            MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
-        }
 
-        // 释放处理完成后的数据
-        for (int plane = 0; plane < videoBuffer.plane_count; plane++) {
-            if (videoBuffer.fm[plane].start != nullptr) {
-                free(videoBuffer.fm[plane].start);
+            // 释放处理完成后的数据
+            for (int plane = 0; plane < videoBuffer.plane_count; plane++) {
+                if (videoBuffer.fm[plane].start != nullptr) {
+                    free(videoBuffer.fm[plane].start);
+                }
             }
-        }
-
-        // 显示到label
-        QMetaObject::invokeMethod(displayLabel, 
-            [image_, displayLabel]() {
-                displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
-                    displayLabel->width(), displayLabel->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            }
-        , Qt::QueuedConnection);
-    }
-}
-
-void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
-    QImage image(w, h, QImage::Format_RGB888);
-    unsigned char* data_ = static_cast<unsigned char*>(data);
-
-    for (int y = 0; y < h; ++y) {
-        unsigned char* line = image.scanLine(y); // 获取当前行
-        for (int x = 0; x < w; x += 2) {
-            int i = (y * w + x) * 2; // 每4字节表示2个像素
-            int y0 = data_[i];
-            int u = data_[i + 1];
-            int y1 = data_[i + 2];
-            int v = data_[i + 3];
-
-            int c = y0 - 16;
-            int d = u - 128;
-            int e = v - 128;
-
-            int r0 = clamp((298 * c + 409 * e + 128) >> 8, 0, 255);
-            int g0 = clamp((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255);
-            int b0 = clamp((298 * c + 516 * d + 128) >> 8, 0, 255);
-
-            c = y1 - 16;
-            int r1 = clamp((298 * c + 409 * e + 128) >> 8, 0, 255);
-            int g1 = clamp((298 * c - 100 * d - 208 * e + 128) >> 8, 0, 255);
-            int b1 = clamp((298 * c + 516 * d + 128) >> 8, 0, 255);
-
-            // 写入两个像素数据
-            *line++ = r0; *line++ = g0; *line++ = b0; // 第一个像素
-            *line++ = r1; *line++ = g1; *line++ = b1; // 第二个像素
+            
+            if(image_.isNull()) continue;
+            // 处理后帧入队
+            QImageframes.enqueue(image_);
+            // qDebug() << ":: Frame queue";
+            image_ = QImage();
         }
     }
-
-    image_ = image;  // 返回转换后的 QImage
 }
-
-// 低效算法
-// void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length){
-//     QByteArray mjpegData(static_cast<const char*>(data), length);
-//     QImage image;
-//     QBuffer buffer(&mjpegData);
-//     buffer.open(QIODevice::ReadOnly);
-//     QImageReader reader(&buffer, "JPEG");  // 指定为 JPEG 格式
-//     if (reader.read(&image)) {
-//         image_ = image;  // 返回解码后的图像
-//     } else {
-//         qWarning() << "Failed to decode MJPEG frame!";
-//         return;  // 返回空图像
-//     }
-// }
 
 void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
     tjhandle handle = tjInitDecompress();
@@ -451,34 +415,72 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
     image_ = image;  // 返回解码后的图像
 }
 
-void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
-    QImage image(w, h, QImage::Format_RGB888);
-    unsigned char* y_data = static_cast<unsigned char*>(data_y);
-    unsigned char* uv_data = static_cast<unsigned char*>(data_uv);
-
-    for (int i = 0; i < h; ++i) {
-        for (int j = 0; j < w; ++j) {
-            int y = y_data[i * w + j];
-            int u = uv_data[(i / 2) * w + (j / 2) * 2] - 128;
-            int v = uv_data[(i / 2) * w + (j / 2) * 2 + 1] - 128;
-
-            int r = y + 1.403 * v;
-            int g = y - 0.344 * u - 0.714 * v;
-            int b = y + 1.770 * u;
-
-            r = clamp(r, 0, 255);
-            g = clamp(g, 0, 255);
-            b = clamp(b, 0, 255);
-
-            image.setPixel(j, i, qRgb(r, g, b));
-        }
-    }
-    image_ = image;
+/* 尝试直接操作image_(引用)减少额外开销 */
+void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
+    // QImage image(w, h, QImage::Format_RGB888);
+    
+    // 1. 使用 ARGB 作为中间格式
+    std::vector<uint8_t> argb_buffer(w * h * 4); // ARGB 缓冲区
+    libyuv::YUY2ToARGB(
+        static_cast<const uint8_t*>(data),  // 输入 YUYV 数据
+        w * 2,                              // YUYV 的步长（每行字节数）
+        argb_buffer.data(),                 // 输出 ARGB 数据
+        w * 4,                              // ARGB 的步长（每行字节数）
+        w, h                                // 宽高
+    );
+    
+    // 2. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
+    libyuv::ARGBToRGB24(
+        argb_buffer.data(),    // 输入 ARGB 数据
+        w * 4,                 // ARGB 的步长
+        image_.bits(),          // 输出 RGB24 数据
+        w * 3,                 // RGB24 的步长
+        w, h
+    );
+    
+    // image_ = image;
 }
 
-int Vvideo::closeDevice() {
+void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
+    // QImage image(w, h, QImage::Format_RGB888);
+    // 使用libyuv转换NV12到RGB
+    libyuv::NV12ToRGB24(
+        static_cast<const uint8_t*>(data_y),    // Y平面
+        w,                                      // Y步长
+        static_cast<const uint8_t*>(data_uv),   // UV平面
+        w,                                      // UV步长（NV12中UV交错）
+        image_.bits(),                           // 输出RGB数据
+        w * 3,                                  // RGB步长
+        w, h                                    // 宽高
+    );
+    // image_ = image;
+}
+
+void Vvideo::updateImage()
+{
+    QImage image_;
+    QImageframes.try_dequeue(image_);
+    if(image_.isNull()) return;
+    // 显示到label
+    QMetaObject::invokeMethod(displayLabel, 
+        [this, image_]() {
+            displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
+                displayLabel->width(), displayLabel->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+    , Qt::QueuedConnection);
+    image_ = QImage();
+}
+
+void Vvideo::takePic(QImage &img)
+{
+    img = QImageframes.dequeue();
+}
+
+int Vvideo::closeDevice()
+{
     frameQueue.clear(); // 清空队列
-    qDebug() << frameQueue.size();
+    QImageframes.clear();
+    // qDebug() << frameQueue.size();
     // 停止采集并释放映射
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to stop streaming");

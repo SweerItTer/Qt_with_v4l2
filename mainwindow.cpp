@@ -31,6 +31,7 @@ MainWindow::MainWindow(QWidget *parent)
 	, m_captureThread(nullptr)
 {
 	ui->setupUi(this);
+    // UI基础图标初始化
 	ui->takepic->setIconSize(QSize(40, 40)); // 设置图标大小
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
 
@@ -43,15 +44,19 @@ MainWindow::MainWindow(QWidget *parent)
 
     ui->Display->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
-
+    // 更新相册按钮
     QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
     setIcon(fileName);
-
+    // 初始化变量
 	devicesComboBox = ui->devices;
 	pixFormatComboBox = ui->pixformat;
 	resolutionsComboBox = ui->resolutions;
     displayLabel = ui->Display;
-
+    // 创建QTimer对象
+    timer = new QTimer(this);
+    // 设置定时器的超时时间为2毫秒
+    timer->setInterval(2);
+    // 更新设备信息
 	fillComboBoxWithV4L2Devices();
 
 	connect(devicesComboBox, SIGNAL(currentIndexChanged(int)), this, SLOT(on_devices_currentIndexChanged(int)));
@@ -292,8 +297,10 @@ void MainWindow::on_open_pb_released()
     
     // 开始视频流
     threadHandle = std::thread(&Vvideo::run, m_captureThread.get());
-    // connect(m_captureThread, &Vvideo::frameAvailable, this, &MainWindow::updateFrame, Qt::UniqueConnection);
-
+    // 连接定时器的timeout信号到up()槽函数
+    connect(timer, &QTimer::timeout, m_captureThread.get(), &Vvideo::updateImage);
+    // 启动定时器
+    timer->start();
 }
 // 美化UI用(按钮图标更新)
 void MainWindow::on_takepic_pressed()
@@ -304,13 +311,16 @@ void MainWindow::on_takepic_pressed()
 void MainWindow::on_takepic_released()
 {
 	ui->takepic->setIcon(QIcon(":/icon/icon/takepic_1.svg")); // 设置SVG图标
-    
-    const QPixmap *pixmap = displayLabel->pixmap();
-    if (!pixmap){
-        qDebug() << "Label pixmap is null.";
+    if(!m_captureThread){ //检查线程是否启用
+        qDebug() << "Failed to save image: Thread not working.";
         return;
     }
-    QImage img = pixmap->toImage();
+    QImage img;
+    m_captureThread->takePic(img);
+    if (img.isNull()){
+        qDebug() << "QImage is null.";
+        return;
+    }
     // 获取当前时间
     QDateTime currentDateTime = QDateTime::currentDateTime();
     // 获取当前的时间戳（精确到毫秒）
@@ -383,6 +393,9 @@ QString MainWindow::findOldestImage(const QString &folderPath) {
 }
 // 关闭线程
 void MainWindow::killThread(){
+    if(timer->isActive()){
+        timer->stop();
+    }
     if(m_captureThread){
         m_captureThread->stop();
         // 等待线程退出

@@ -3,6 +3,8 @@
 
 #include <QWidget>
 #include <QComboBox>
+#include <QTimer>
+
 #include "v4l2_video.h"
 
 #include <memory>
@@ -53,10 +55,11 @@ private:
     QComboBox *pixFormatComboBox = nullptr;
     QComboBox *resolutionsComboBox = nullptr;
     QLabel *displayLabel = nullptr;
-    std::unique_ptr<Vvideo> m_captureThread; // Vvideo 对象指针
-    std::thread threadHandle;               // 标准库线程对象
+    std::unique_ptr<Vvideo> m_captureThread;    // Vvideo 对象指针
+    std::thread threadHandle;                   // 标准库线程对象
 
     QImage frame_;
+    QTimer *timer = nullptr;
 
 	int fd = -1;
 
