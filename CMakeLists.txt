@@ -47,6 +47,7 @@ set(PROJECT_SOURCES
         v4l2_video.h
         queue_.h
         albumwindow.h
+        mywidget.h
         rec.qrc
 )
 

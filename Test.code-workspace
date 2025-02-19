@@ -73,7 +73,8 @@
 			"qmutex": "cpp",
 			"qqueue": "cpp",
 			"qthread": "cpp",
-			"qimagereader": "cpp"
+			"qimagereader": "cpp",
+			"qcombobox": "cpp"
 		}
 	}
 }

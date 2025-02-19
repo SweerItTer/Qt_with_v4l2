@@ -43,7 +43,7 @@ MainWindow::MainWindow(QWidget *parent)
     }
 
     ui->Display->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
-    ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
+    // ui->Display->setAlignment(Qt::AlignCenter);  // 图像居中显示
     // 更新相册按钮
     QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
     setIcon(fileName);
@@ -51,11 +51,9 @@ MainWindow::MainWindow(QWidget *parent)
 	devicesComboBox = ui->devices;
 	pixFormatComboBox = ui->pixformat;
 	resolutionsComboBox = ui->resolutions;
-    displayLabel = ui->Display;
+    displayWidget = ui->Display;
     // 创建QTimer对象
     timer = new QTimer(this);
-    // 设置定时器的超时时间为33毫秒
-    timer->setInterval(66);
     // 更新设备信息
 	fillComboBoxWithV4L2Devices();
 
@@ -270,7 +268,7 @@ void MainWindow::on_open_pb_released()
 {   
     killThread();
     // 创建新的 Vvideo 对象
-    m_captureThread = std::unique_ptr<Vvideo>(new Vvideo(global_M, displayLabel));
+    m_captureThread = std::unique_ptr<Vvideo>(new Vvideo(global_M, displayWidget));
 
     // 初始化V4L2设备
     if (m_captureThread->openDevice(devicesComboBox->currentText()) < 0) {
@@ -300,7 +298,7 @@ void MainWindow::on_open_pb_released()
     // 连接定时器的timeout信号到up()槽函数
     connect(timer, &QTimer::timeout, m_captureThread.get(), &Vvideo::updateImage);
     // 启动定时器
-    timer->start();
+    timer->start(330);
 }
 // 美化UI用(按钮图标更新)
 void MainWindow::on_takepic_pressed()

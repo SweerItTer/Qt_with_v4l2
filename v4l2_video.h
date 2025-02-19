@@ -8,7 +8,7 @@
 #include <sys/stat.h>
 #include <atomic>
 
-
+#include "mywidget.h"
 #include "libyuv.h"
 #include "queue_.h"
 
@@ -19,7 +19,6 @@
 #include <QMutexLocker>
 #include <thread>
 #include <QDebug>
-#include <QLabel>
 
 #include <linux/videodev2.h>
 
@@ -44,7 +43,7 @@ class Vvideo : public QObject {
     Q_OBJECT    // 信号与槽必要宏
 public:
     
-    explicit Vvideo(const bool& is_M_, QLabel *Label, QObject *parent=nullptr);
+    explicit Vvideo(const bool& is_M_, MyWidget *Label, QObject *parent=nullptr);
     ~Vvideo();
 
     void run() {
@@ -82,15 +81,15 @@ private:
     // QMutex mutex;              /* 线程锁交由queue处理 */
     std::thread captureThread_;
     std::thread processThread_;
-    QLabel *displayLabel = nullptr;
+    MyWidget *displayLabel = nullptr;
     // SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
     SafeQueue<int> frameIndexQueue; // 尝试用索引队列(失败)
-    SafeQueue<QPixmap> QPixmapframes;    // 处理后帧队列
+    SafeQueue<QImage> QImageframes;    // 处理后帧队列
     struct v4l2_buffer buffer;
     video_buf_t *framebuf = nullptr; // 映射
     
     int captureFrame();
-    void processFrame(QLabel *displayLabel);
+    void processFrame(MyWidget *displayLabel);
 
     int initSinglePlaneBuffers();
     int initMultiPlaneBuffers();

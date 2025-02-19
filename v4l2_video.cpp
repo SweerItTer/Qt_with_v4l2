@@ -19,7 +19,7 @@ inline int clamp(int value, int min, int max)
 }
 
 v4l2_buf_type type;
-Vvideo::Vvideo(const bool& is_M_, QLabel *Label, QObject *parent)
+Vvideo::Vvideo(const bool& is_M_, MyWidget *Label, QObject *parent)
     : fd(-1), is_M(is_M_), displayLabel(Label)
 {
     type = is_M ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -320,11 +320,11 @@ int Vvideo::captureFrame() {
     return 0;
 }
 
-void Vvideo::processFrame(QLabel *displayLabel) {
+void Vvideo::processFrame(MyWidget *displayLabel) {
     int buf_index;
     uint wait = 0;
     while (!quit_) {
-        while(QPixmapframes.size() > 15) {
+        while(QImageframes.size() > 15) {
             std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 等待ui更新label
             wait ++;
             if (wait > 5) // 5次等待超时,UI更新出现问题
@@ -380,13 +380,12 @@ void Vvideo::processFrame(QLabel *displayLabel) {
             }
 
             if (image_.isNull()) continue;
-
-            // 旋转图像以适应竖屏显示
-            image_ = image_.transformed(QMatrix().rotate(270));
-
+            #ifdef RV1126
+                // 旋转图像以适应竖屏显示
+                image_ = image_.transformed(QMatrix().rotate(270));
+            #endif 
             // 处理后帧入队
-            QPixmap pixmap = QPixmap::fromImage(image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            QPixmapframes.enqueue(pixmap);
+            QImageframes.enqueue(image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
     }
 }
@@ -460,27 +459,28 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
 
 void Vvideo::updateImage()
 {
-    QPixmap Pixmap_img;
-    QPixmapframes.try_dequeue(Pixmap_img);
+    QImage _img;
+    QImageframes.try_dequeue(_img);
     
-    if(Pixmap_img.isNull()) return;
+    if(_img.isNull()) return;
     // 显示到label
-    QMetaObject::invokeMethod(displayLabel, 
-        [this, Pixmap_img]() {
-            displayLabel->setPixmap(Pixmap_img);
-        }
-    , Qt::QueuedConnection);
+    displayLabel->updateImage(_img);
+    // QMetaObject::invokeMethod(displayLabel, 
+    //     [this, _img]() {
+    //         displayLabel->setPixmap(Pixmap_img);
+    //     }
+    // , Qt::QueuedConnection);
 }
 
 void Vvideo::takePic(QImage &img)
 {
-    img = QPixmapframes.dequeue().toImage();
+    img = QImageframes.dequeue();
 }
 
 int Vvideo::closeDevice()
 {
     frameIndexQueue.clear(); // 清空队列
-    QPixmapframes.clear();
+    QImageframes.clear();
     // 停止采集并释放映射
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to stop streaming");
