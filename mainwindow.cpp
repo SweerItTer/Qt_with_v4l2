@@ -54,8 +54,8 @@ MainWindow::MainWindow(QWidget *parent)
     displayLabel = ui->Display;
     // 创建QTimer对象
     timer = new QTimer(this);
-    // 设置定时器的超时时间为2毫秒
-    timer->setInterval(2);
+    // 设置定时器的超时时间为33毫秒
+    timer->setInterval(66);
     // 更新设备信息
 	fillComboBoxWithV4L2Devices();
 

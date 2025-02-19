@@ -71,7 +71,8 @@
         "qmutex": "cpp",
         "qqueue": "cpp",
         "qthread": "cpp",
-        "qimagereader": "cpp"
+        "qimagereader": "cpp",
+        "qgraphicsview": "cpp"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }

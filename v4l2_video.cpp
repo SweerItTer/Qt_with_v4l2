@@ -96,6 +96,10 @@ int Vvideo::setFormat(const __u32 &w_, const __u32 &h_, const __u32 &fmt_)
 }
 
 int Vvideo::initBuffers() {
+    for (int num = 0; num < BUFCOUNT; num++) {
+        framebuf[num].fm[0].in_use = false;  // 初始状态未使用
+    }
+    
     if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
         return initSinglePlaneBuffers();
     } else if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
@@ -154,6 +158,7 @@ cleanup:
     for (int i = 0; i < BUFCOUNT; i++) {
         if (framebuf[i].fm[0].start && framebuf[i].fm[0].start != MAP_FAILED) {
             munmap(framebuf[i].fm[0].start, framebuf[i].fm[0].length);
+            framebuf[i].fm[0].start = nullptr; // 清理映射
         }
     }
     close(fd);
@@ -241,6 +246,7 @@ cleanup:
         for (int plane = 0; plane < framebuf[i].plane_count; plane++) {
             if (framebuf[i].fm[plane].start && framebuf[i].fm[plane].start != MAP_FAILED) {
                 munmap(framebuf[i].fm[plane].start, framebuf[i].fm[plane].length);
+                framebuf[i].fm[0].start = nullptr; // 清理映射
             }
         }
     }
@@ -251,11 +257,10 @@ cleanup:
 
 
 int Vvideo::captureFrame() {
-    video_buf_t videoBuffer;
     while(!quit_)
     {
         // 限制缓存队列长度
-        if (frameQueue.size() >= 14) {
+        if (frameIndexQueue.size() > 10) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
@@ -294,53 +299,35 @@ int Vvideo::captureFrame() {
             perror("Failed to dequeue buffer");
             return -1;
         }
+
+        int buf_index = buffer.index;
+
+        // 如果该缓冲区正在被 `processFrame()` 处理，则重新入队
+        if (framebuf[buf_index].fm[0].in_use == true) {
+            if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
+                perror("Failed to queue buffer");
+            }
+            continue;
+        }
         
-        // 清空上一帧数据
-        memset(&videoBuffer, 0, sizeof(video_buf_t));
-        if(V4L2_BUF_TYPE_SLICED_VBI_CAPTURE == type){
-            videoBuffer.plane_count = buffer.length;
-        } else {
-            videoBuffer.plane_count = 1;
-        }
+        
+        // 标记缓冲区正在使用
+        framebuf[buf_index].fm[0].in_use = true;
 
-        // 复制帧数据(mmap入队后会清空数据)
-        for (int plane = 0; plane < videoBuffer.plane_count; ++plane) {
-            
-            if (V4L2_BUF_TYPE_VIDEO_CAPTURE == type) {
-                videoBuffer.fm[plane].length = buffer.length;
-            } else {
-                videoBuffer.fm[plane].length = planes[plane].bytesused;
-            }
-            size_t length = videoBuffer.fm[plane].length;
-            // 分配并复制数据到独立的缓冲区
-            videoBuffer.fm[plane].start = malloc(length);
-            if (videoBuffer.fm[plane].start == nullptr) {
-                perror("Failed to allocate memory for frame");
-                return -1; // 或者适当处理错误
-            }
-            memcpy(videoBuffer.fm[plane].start, framebuf[buffer.index].fm[plane].start, length);       
-        }
-
-        // 将 videoBuffer 入帧队列
-        frameQueue.enqueue(videoBuffer);
-
-        // 入列
-        if (ioctl(fd, VIDIOC_QBUF, &buffer) == -1) {
-            perror("Failed to queue buffer");
-        }
-
+        // 入队处理
+        frameIndexQueue.enqueue(buf_index);
     }
     return 0;
 }
 
 void Vvideo::processFrame(QLabel *displayLabel) {
-    video_buf_t videoBuffer;
+    int buf_index;
     uint wait = 0;
     while (!quit_) {
-        while(QImageframes.size() > 29) {
+        while(QPixmapframes.size() > 15) {
             std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 等待ui更新label
             wait ++;
-            if (wait > 30) // 30次等待超时,UI更新出现问题
+            if (wait > 5) // 5次等待超时,UI更新出现问题
             {
                 qDebug() << "UI update frame failed.";
                 wait = 0;
@@ -348,45 +335,58 @@ void Vvideo::processFrame(QLabel *displayLabel) {
             }
         }
         // 从队列中取出帧
-        if (!frameQueue.try_dequeue(videoBuffer)) {
+        if (!frameIndexQueue.try_dequeue(buf_index)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
         // 若数据长度为0,忽略
-        if (videoBuffer.fm[0].length == 0) continue;
-
+        if (framebuf[buf_index].fm[0].length == 0) continue;
         // 添加数据处理部分到线程池
         {
             QImage image_ = QImage(w, h, QImage::Format_RGB888);
             if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
 
                 if (fmt == V4L2_PIX_FMT_NV12) {
-                    NV12ToRGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length,
-                            videoBuffer.fm[1].start, videoBuffer.fm[1].length);
+                    NV12ToRGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length,
+                        framebuf[buf_index].fm[1].start, framebuf[buf_index].fm[1].length);
                 } else if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
-                    MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
+                    MJPG2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
                 } else if (fmt == V4L2_PIX_FMT_YUYV) {
-                    YUYV2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
+                    YUYV2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
                 } else {
                     qDebug() << "Unsupported format";
                     image_ = QImage();
                 }
             } else {// 测试平台仅有MJPG格式可以使用
-                MJPG2RGB(image_, videoBuffer.fm[0].start, videoBuffer.fm[0].length);
+                MJPG2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
             }
 
-            // 释放处理完成后的数据
-            for (int plane = 0; plane < videoBuffer.plane_count; plane++) {
-                if (videoBuffer.fm[plane].start != nullptr) {
-                    free(videoBuffer.fm[plane].start);
-                }
+            struct v4l2_buffer qbuf;
+            struct v4l2_plane planes[FMT_NUM_PLANES];
+            memset(planes, 0, sizeof(planes));
+            memset(&qbuf, 0, sizeof(qbuf));
+            qbuf.type = type;
+            qbuf.index = buf_index;
+            qbuf.memory = V4L2_MEMORY_MMAP;
+
+            if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+                qbuf.m.planes = planes;
+                qbuf.length = FMT_NUM_PLANES;
             }
-            
-            if(image_.isNull()) continue;
+            framebuf[buf_index].fm[0].in_use = false;
+            // 缓冲区重新入队
+            if (ioctl(fd, VIDIOC_QBUF, &qbuf) == -1) {
+                perror("Failed to queue buffer");
+            }
+
+            if (image_.isNull()) continue;
+
+            // 旋转图像以适应竖屏显示
+            image_ = image_.transformed(QMatrix().rotate(270));
+
             // 处理后帧入队
-            QImageframes.enqueue(image_);
-            // qDebug() << ":: Frame queue";
-            image_ = QImage();
+            QPixmap pixmap = QPixmap::fromImage(image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            QPixmapframes.enqueue(pixmap);
         }
     }
 }
@@ -417,8 +417,6 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
 
 /* 尝试直接操作image_(引用)减少额外开销 */
 void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
-    // QImage image(w, h, QImage::Format_RGB888);
-    
     // 1. 使用 ARGB 作为中间格式
     std::vector<uint8_t> argb_buffer(w * h * 4); // ARGB 缓冲区
     libyuv::YUY2ToARGB(
@@ -428,17 +426,21 @@ void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
         w * 4,                              // ARGB 的步长（每行字节数）
         w, h                                // 宽高
     );
-    
-    // 2. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
+
+    // 2. 手动交换 ARGB 中的 R 和 B 通道
+    for (size_t i = 0; i < w * h; ++i) {
+        uint8_t *pixel = &argb_buffer[i * 4];
+        std::swap(pixel[0], pixel[2]);  // 交换 R 和 B
+    }
+
+    // 3. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
     libyuv::ARGBToRGB24(
         argb_buffer.data(),    // 输入 ARGB 数据
         w * 4,                 // ARGB 的步长
-        image_.bits(),          // 输出 RGB24 数据
+        image_.bits(),         // 输出 RGB24 数据
         w * 3,                 // RGB24 的步长
         w, h
     );
-    
-    // image_ = image;
 }
 
 void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
@@ -458,29 +460,27 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
 
 void Vvideo::updateImage()
 {
-    QImage image_;
-    QImageframes.try_dequeue(image_);
-    if(image_.isNull()) return;
+    QPixmap Pixmap_img;
+    QPixmapframes.try_dequeue(Pixmap_img);
+    
+    if(Pixmap_img.isNull()) return;
     // 显示到label
     QMetaObject::invokeMethod(displayLabel, 
-        [this, image_]() {
-            displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
-                displayLabel->width(), displayLabel->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        [this, Pixmap_img]() {
+            displayLabel->setPixmap(Pixmap_img);
         }
     , Qt::QueuedConnection);
-    image_ = QImage();
 }
 
 void Vvideo::takePic(QImage &img)
 {
-    img = QImageframes.dequeue();
+    img = QPixmapframes.dequeue().toImage();
 }
 
 int Vvideo::closeDevice()
 {
-    frameQueue.clear(); // 清空队列
-    QImageframes.clear();
-    // qDebug() << frameQueue.size();
+    frameIndexQueue.clear(); // 清空队列
+    QPixmapframes.clear();
     // 停止采集并释放映射
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to stop streaming");

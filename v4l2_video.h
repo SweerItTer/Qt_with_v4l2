@@ -14,6 +14,7 @@
 
 #include <QObject>
 #include <QImage>
+#include <QPixmap>
 #include <QMutex>
 #include <QMutexLocker>
 #include <thread>
@@ -29,6 +30,7 @@ using namespace std;
 typedef struct __frame {
     void *start;                // 存储每个平面映射的内存
     size_t length;               // 每个平面的长度
+    bool in_use;                 // 是否正在使用
 } frame_data;
 
 typedef struct __video_buffer {
@@ -81,8 +83,9 @@ private:
     std::thread captureThread_;
     std::thread processThread_;
     QLabel *displayLabel = nullptr;
-    SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
-    SafeQueue<QImage> QImageframes;    // 处理后帧队列
+    // SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
+    SafeQueue<int> frameIndexQueue; // 尝试用索引队列(失败)
+    SafeQueue<QPixmap> QPixmapframes;    // 处理后帧队列
     struct v4l2_buffer buffer;
     video_buf_t *framebuf = nullptr; // 映射
     
