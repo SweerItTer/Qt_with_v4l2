@@ -1,10 +1,8 @@
 ﻿#include "mainwindow.h"
-#include "albumwindow.h"
-#include "./ui_mainwindow.h"
+
 #include <QDir>
 #include <QString>
 #include <QDebug>
-#include <QMessageBox>
 #include <QDateTime>
 #include <QImageWriter>
 #include <QScreen>
@@ -48,10 +46,10 @@ MainWindow::MainWindow(QWidget *parent)
     QString fileName = findOldestImage(QCoreApplication::applicationDirPath() + "/photos/");
     setIcon(fileName);
     // 初始化变量
-	devicesComboBox = ui->devices;
-	pixFormatComboBox = ui->pixformat;
-	resolutionsComboBox = ui->resolutions;
-    displayLabel = ui->Display;
+	// devicesComboBox = ui->devices;
+	// pixFormatComboBox = ui->pixformat;
+	// resolutionsComboBox = ui->resolutions;
+    // displayLabel = ui->Display;
     // 创建QTimer对象
     timer = new QTimer(this);
     // 设置定时器的超时时间为2毫秒
@@ -88,10 +86,6 @@ MainWindow::~MainWindow()
 		::close(fd);
 	}
     killThread();
-    delete devicesComboBox;
-    delete pixFormatComboBox;
-    delete resolutionsComboBox;
-	delete ui;
 }
 // 检查给定的路径是否是一个字符设备
 bool isCharacterDevice(const QString &path) {

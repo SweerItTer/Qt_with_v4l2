@@ -19,12 +19,11 @@ inline int clamp(int value, int min, int max)
 }
 
 v4l2_buf_type type;
-Vvideo::Vvideo(const bool& is_M_, QLabel *Label, QObject *parent)
-    : fd(-1), is_M(is_M_), displayLabel(Label)
+Vvideo::Vvideo(const bool& is_M_, QObject *parent)
+    : fd(-1), is_M(is_M_)
 {
     type = is_M ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE : V4L2_BUF_TYPE_VIDEO_CAPTURE;
     framebuf = new video_buf_t[BUFCOUNT];
-
 }
 
 Vvideo::~Vvideo(){
@@ -302,7 +301,7 @@ int Vvideo::captureFrame() {
         } else {
             videoBuffer.plane_count = 1;
         }
-
+// ---------------- 后续优化方向:改变映射方式(非紧急)
         // 复制帧数据(mmap入队后会清空数据)
         for (int plane = 0; plane < videoBuffer.plane_count; ++plane) {
             
@@ -333,7 +332,7 @@ int Vvideo::captureFrame() {
     return 0;
 }
 
-void Vvideo::processFrame(QLabel *displayLabel) {
+void Vvideo::processFrame() {
     video_buf_t videoBuffer;
     uint wait = 0;
     while (!quit_) {
@@ -384,13 +383,31 @@ void Vvideo::processFrame(QLabel *displayLabel) {
             
             if(image_.isNull()) continue;
             // 处理后帧入队
-            QImageframes.enqueue(image_);
-            // qDebug() << ":: Frame queue";
+/*  
+这里本来应该根据qml图像显示区域动态调整大小
+但是一个是可能当前大小入队后没有及时取出导致比例失调,另一个就是没有QLabel了
+*/
+            QImageframes.enqueue(image_);  
             image_ = QImage();
         }
     }
 }
 
+void Vvideo::getLatestFrame(QImage &frame){
+    // 取出最新帧
+    bool ret = QImageframes.try_dequeue(frame);
+    if (!ret || frame.isNull()) {
+        qDebug() << ":: Frame queue empty.";
+        return;
+    }
+}
+// 抽帧保存
+void Vvideo::takePic(QImage &img)
+{
+    img = QImageframes.dequeue();
+}
+
+// 解码
 void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
     tjhandle handle = tjInitDecompress();
     if (!handle) {
@@ -415,10 +432,7 @@ void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
     image_ = image;  // 返回解码后的图像
 }
 
-/* 尝试直接操作image_(引用)减少额外开销 */
 void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
-    // QImage image(w, h, QImage::Format_RGB888);
-    
     // 1. 使用 ARGB 作为中间格式
     std::vector<uint8_t> argb_buffer(w * h * 4); // ARGB 缓冲区
     libyuv::YUY2ToARGB(
@@ -429,16 +443,20 @@ void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
         w, h                                // 宽高
     );
     
-    // 2. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
+    // 2. 手动交换 ARGB 中的 R 和 B 通道
+    for (size_t i = 0; i < w * h; ++i) {
+        uint8_t *pixel = &argb_buffer[i * 4];
+        std::swap(pixel[0], pixel[2]);  // 交换 R 和 B
+    }
+
+    // 3. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
     libyuv::ARGBToRGB24(
         argb_buffer.data(),    // 输入 ARGB 数据
         w * 4,                 // ARGB 的步长
-        image_.bits(),          // 输出 RGB24 数据
+        image_.bits(),         // 输出 RGB24 数据
         w * 3,                 // RGB24 的步长
         w, h
     );
-    
-    // image_ = image;
 }
 
 void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
@@ -456,26 +474,7 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
     // image_ = image;
 }
 
-void Vvideo::updateImage()
-{
-    QImage image_;
-    QImageframes.try_dequeue(image_);
-    if(image_.isNull()) return;
-    // 显示到label
-    QMetaObject::invokeMethod(displayLabel, 
-        [this, image_]() {
-            displayLabel->setPixmap(QPixmap::fromImage(image_).scaled(
-                displayLabel->width(), displayLabel->height(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        }
-    , Qt::QueuedConnection);
-    image_ = QImage();
-}
-
-void Vvideo::takePic(QImage &img)
-{
-    img = QImageframes.dequeue();
-}
-
+// 关闭设备
 int Vvideo::closeDevice()
 {
     frameQueue.clear(); // 清空队列

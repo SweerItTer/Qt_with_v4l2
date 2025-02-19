@@ -8,7 +8,6 @@
 #include <sys/stat.h>
 #include <atomic>
 
-
 #include "libyuv.h"
 #include "queue_.h"
 
@@ -18,7 +17,6 @@
 #include <QMutexLocker>
 #include <thread>
 #include <QDebug>
-#include <QLabel>
 
 #include <linux/videodev2.h>
 
@@ -41,14 +39,14 @@ typedef struct __video_buffer {
 class Vvideo : public QObject {
     Q_OBJECT    // 信号与槽必要宏
 public:
-    
-    explicit Vvideo(const bool& is_M_, QLabel *Label, QObject *parent=nullptr);
+
+    explicit Vvideo(const bool& is_M_, QObject *parent=nullptr); // 选择qml时无QLabel,选择回调方式处理
     ~Vvideo();
 
     void run() {
         // 开启线程
         captureThread_ = std::thread(&Vvideo::captureFrame, this);
-        processThread_ = std::thread(&Vvideo::processFrame, this, displayLabel);
+        processThread_ = std::thread(&Vvideo::processFrame, this);
 
         captureThread_.detach();
         processThread_.detach();
@@ -65,7 +63,7 @@ public:
     int setFormat(const __u32& w_, const __u32&h_, const __u32& fmt_);
     int initBuffers();
 
-    void updateImage();
+    void getLatestFrame(QImage &frame);
     void takePic(QImage &img);
     int closeDevice();
   
@@ -80,14 +78,13 @@ private:
     // QMutex mutex;              /* 线程锁交由queue处理 */
     std::thread captureThread_;
     std::thread processThread_;
-    QLabel *displayLabel = nullptr;
     SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
     SafeQueue<QImage> QImageframes;    // 处理后帧队列
     struct v4l2_buffer buffer;
     video_buf_t *framebuf = nullptr; // 映射
     
     int captureFrame();
-    void processFrame(QLabel *displayLabel);
+    void processFrame();
 
     int initSinglePlaneBuffers();
     int initMultiPlaneBuffers();

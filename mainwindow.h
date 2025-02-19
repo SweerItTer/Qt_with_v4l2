@@ -1,8 +1,6 @@
 ﻿#ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
-#include <QWidget>
-#include <QComboBox>
 #include <QTimer>
 
 #include "v4l2_video.h"
@@ -11,13 +9,13 @@
 #include <pthread.h>
 using namespace std;
 
-QT_BEGIN_NAMESPACE
-namespace Ui { class MainWindow; }
-QT_END_NAMESPACE
-
-class MainWindow : public QWidget
+class MainWindow : public QObject
 {
 	Q_OBJECT
+    // 这里需要和qml联动,获取到下拉框的选择
+    Q_PROPERTY(int devices READ devices WRITE setDevices NOTIFY devicesChanged)
+    Q_PROPERTY(int pixFormat READ pixFormat WRITE setPixFormat NOTIFY pixFormatChanged)
+    Q_PROPERTY(int resolutions READ resolutions WRITE setResolutions NOTIFY resolutionsChanged)
 
 public:
 	MainWindow(QWidget *parent = nullptr);
@@ -50,11 +48,10 @@ private:
     void killThread();
     void setIcon(QString &fileName);
     
-    Ui::MainWindow *ui;
-    QComboBox *devicesComboBox = nullptr;
-    QComboBox *pixFormatComboBox = nullptr;
-    QComboBox *resolutionsComboBox = nullptr;
-    QLabel *displayLabel = nullptr;
+    // QComboBox *devicesComboBox = nullptr;
+    // QComboBox *pixFormatComboBox = nullptr;
+    // QComboBox *resolutionsComboBox = nullptr;
+    // QLabel *displayLabel = nullptr;
     std::unique_ptr<Vvideo> m_captureThread;    // Vvideo 对象指针
     std::thread threadHandle;                   // 标准库线程对象
 

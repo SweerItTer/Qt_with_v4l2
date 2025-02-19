@@ -3,7 +3,7 @@
 project(Test VERSION 0.1 LANGUAGES CXX)
 
 # 是否使用交叉编译工具链的开关
-if (1)
+if (0)
     message(STATUS "Using cross-compilation toolchain.")
     add_definitions(-DRV1126)
 
@@ -35,24 +35,34 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# set(Qt5_DIR /opt/Qt5.12.12/5.12.12/gcc_64/lib/cmake/Qt5)
-find_package(Qt5 COMPONENTS Widgets REQUIRED)
+set(QT_QML_GENERATE_QMLLS_INI ON)
+find_package(Qt5 COMPONENTS Quick Qml REQUIRED)
 
 set(PROJECT_SOURCES
-        main.cpp
-        mainwindow.cpp
+        main.cpp # 入口
+
+        queue_.h # 安全队列
+        mainwindow.cpp  # 主窗口
         mainwindow.h
-        mainwindow.ui
-        v4l2_video.cpp
+        v4l2_video.cpp  # v4l2主要逻辑
         v4l2_video.h
-        queue_.h
-        albumwindow.h
-        rec.qrc
+
+        VideoProvider.cpp   # 视频流提供器
+        VideoProvider.h
+
+        Main.qml
+        qml.qrc # 资源文件
 )
 
 add_executable(QC_e
     ${PROJECT_SOURCES}
 )
 
-target_link_libraries(QC_e PRIVATE Qt5::Widgets turbojpeg pthread -l:libyuv.a)
+target_link_libraries(QC_e PRIVATE 
+    Qt5::Core
+    Qt5::Quick
+    Qt5::Qml
+    turbojpeg 
+    pthread 
+    -l:libyuv.a)
 

@@ -1,6 +1,7 @@
-#include "mainwindow.h"
-
-#include <QApplication>
+#include <QGuiApplication> // 替换 QApplication
+#include <QQmlApplicationEngine>
+#include "v4l2_video.h"
+#include "VideoProvider.h" // 新增
 
 #ifdef RV1126
 #include <iostream>
@@ -47,11 +48,10 @@ void startService(const std::string& serviceName) {
 }
 #endif // RV1126
 
-int main(int argc, char *argv[])
-{
-	#ifdef RV1126
+int main(int argc, char *argv[]) {
+    #ifdef RV1126
 	
-	std::string serviceName = "ispserver"; // 替换为你的服务名
+	std::string serviceName = "ispserver"; // 开启服务
 
     // 检查服务是否运行
     if (!isServiceRunning(serviceName)) {
@@ -62,9 +62,20 @@ int main(int argc, char *argv[])
     }
 	
 	#endif // RV1126
-	
-	QApplication a(argc, argv);
-	MainWindow w;
-	w.show();
-	return a.exec();
+    QGuiApplication app(argc, argv); // 使用 QGuiApplication 替代 QApplication
+    
+    Vvideo camera(true, nullptr);  // 创建 Vvideo 对象，传入是否支持多平面
+    
+    // 注册 VideoProvider 类型
+    qmlRegisterType<VideoProvider>("CameraCore", 1, 0, "VideoProvider");
+
+    QQmlApplicationEngine engine;
+    
+    // 将 camera 对象暴露给 QML
+    engine.rootContext()->setContextProperty("camera", &camera);
+    
+    // 加载 QML 文件
+    engine.load(QUrl("qrc:/Main.qml"));
+    
+    return app.exec();
 }

@@ -1,0 +1,9 @@
+<RCC>
+    <qresource prefix="/">
+        <file>Main.qml</file>
+    </qresource>
+    <qresource prefix="/icon">
+        <file>icon/takepic_2.svg</file>
+        <file>icon/takepic_1.svg</file>
+    </qresource>
+</RCC>

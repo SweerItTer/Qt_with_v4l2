@@ -1,8 +1,8 @@
 {
     "cmake.sourceDirectory": "/home/mouj/pro/Test",
-    "cmake.configureArgs": [
-        "-DCMAKE_TOOLCHAIN_FILE=/home/mouj/pro/Test/toolchain.cmake"
-    ],
+    // "cmake.configureArgs": [
+    //     "-DCMAKE_TOOLCHAIN_FILE=/home/mouj/pro/Test/toolchain.cmake"
+    // ],
     "files.associations": {
         "*.cpp": "cpp",
         "array": "cpp",
