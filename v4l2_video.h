@@ -100,9 +100,9 @@ private:
     int initSinglePlaneBuffers();
     int initMultiPlaneBuffers();
 
-    void MJPG2RGB(QImage &image_, void *data, size_t length);
-    void YUYV2RGB(QImage &image_, void *data, size_t length);
-    void NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv);
+    bool MJPG2RGB(QImage &image_, void *data, size_t length);
+    bool YUYV2RGB(QImage &image_, void *data, size_t length);
+    bool NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv);
 
 };
 

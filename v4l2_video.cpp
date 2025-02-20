@@ -1,6 +1,7 @@
 #include "v4l2_video.h"
 #include <QImageReader>
 #include <QBuffer>
+#include <QElapsedTimer>
 
 #include <sys/mman.h>
 #include <cstring>
@@ -10,7 +11,7 @@
 
 #include <turbojpeg.h>
 
-#define BUFCOUNT 20
+#define BUFCOUNT 18
 #define FMT_NUM_PLANES 2
 
 inline int clamp(int value, int min, int max)
@@ -260,7 +261,7 @@ int Vvideo::captureFrame() {
     while(!quit_)
     {
         // 限制缓存队列长度
-        if (frameIndexQueue.size() > 16) {
+        if (frameIndexQueue.size() > 14) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
@@ -323,16 +324,23 @@ int Vvideo::captureFrame() {
 void Vvideo::processFrame(MyWidget *displayLabel) {
     int buf_index;
     uint wait = 0;
+    QElapsedTimer frameTimer;
+    frameTimer.start();
+    const int targetFrameTime = 33; // 约30fps
+
     while (!quit_) {
-        while(frameQueue.size() > 29) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 等待ui更新label
-            wait ++;
-            if (wait > 5) // 5次等待超时,UI更新出现问题
-            {
-                qDebug() << "UI update frame failed.";
-                wait = 0;
-                continue;
-            }
+        // 帧率控制
+        qint64 elapsed = frameTimer.elapsed();
+        if (elapsed < targetFrameTime) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(targetFrameTime - elapsed));
+            continue;
+        }
+        frameTimer.restart();
+
+        // 限制队列大小为15帧,避免内存占用过高
+        while(frameQueue.size() > 15) {
+            TimedImage oldFrame;
+            frameQueue.try_dequeue(oldFrame); // 丢弃旧帧
         }
         // 从队列中取出帧
         if (!frameIndexQueue.try_dequeue(buf_index)) {
@@ -341,96 +349,120 @@ void Vvideo::processFrame(MyWidget *displayLabel) {
         }
         // 若数据长度为0,忽略
         if (framebuf[buf_index].fm[0].length == 0) continue;
-        // 添加数据处理部分到线程池
-        {
-            QImage image_ = QImage(w, h, QImage::Format_RGB888);
-            if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
 
-                if (fmt == V4L2_PIX_FMT_NV12) {
-                    NV12ToRGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length,
-                        framebuf[buf_index].fm[1].start, framebuf[buf_index].fm[1].length);
-                } else if (fmt == V4L2_PIX_FMT_MJPEG || fmt == V4L2_PIX_FMT_JPEG) {
-                    MJPG2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
-                } else if (fmt == V4L2_PIX_FMT_YUYV) {
-                    YUYV2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
-                } else {
+        QImage image_(w, h, QImage::Format_RGB888);
+        bool conversionSuccess = false;
+
+        // 图像格式转换
+        if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+            switch(fmt) {
+                case V4L2_PIX_FMT_NV12:
+                    conversionSuccess = NV12ToRGB(image_, 
+                        framebuf[buf_index].fm[0].start, 
+                        framebuf[buf_index].fm[0].length,
+                        framebuf[buf_index].fm[1].start, 
+                        framebuf[buf_index].fm[1].length);
+                    break;
+                case V4L2_PIX_FMT_MJPEG:
+                case V4L2_PIX_FMT_JPEG:
+                    conversionSuccess = MJPG2RGB(image_, 
+                        framebuf[buf_index].fm[0].start, 
+                        framebuf[buf_index].fm[0].length);
+                    break;
+                case V4L2_PIX_FMT_YUYV:
+                    conversionSuccess = YUYV2RGB(image_, 
+                        framebuf[buf_index].fm[0].start, 
+                        framebuf[buf_index].fm[0].length);
+                    break;
+                default:
                     qDebug() << "Unsupported format";
                     image_ = QImage();
-                }
-            } else {// 测试平台仅有MJPG格式可以使用
-                MJPG2RGB(image_, framebuf[buf_index].fm[0].start, framebuf[buf_index].fm[0].length);
+                    break;
             }
-
-            struct v4l2_buffer qbuf;
-            struct v4l2_plane planes[FMT_NUM_PLANES];
-            memset(planes, 0, sizeof(planes));
-            memset(&qbuf, 0, sizeof(qbuf));
-            qbuf.type = type;
-            qbuf.index = buf_index;
-            qbuf.memory = V4L2_MEMORY_MMAP;
-
-            if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
-                qbuf.m.planes = planes;
-                qbuf.length = FMT_NUM_PLANES;
-            }
-            framebuf[buf_index].fm[0].in_use = false;
-            // 缓冲区重新入队
-            if (ioctl(fd, VIDIOC_QBUF, &qbuf) == -1) {
-                perror("Failed to queue buffer");
-            }
-
-            if (image_.isNull()) continue;
-            #ifdef RV1126
-                // 旋转图像以适应竖屏显示
-                image_ = image_.transformed(QMatrix().rotate(270));
-            #endif 
-            // 处理后帧入队
-            // 记录入队时间戳
-            TimedImage timedImage;
-            timedImage.image = image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
-            timedImage.timestamp = QTime::currentTime(); // 获取当前时间戳
-
-            frameQueue.enqueue(timedImage);
+        } else {
+            conversionSuccess = MJPG2RGB(image_, framebuf[buf_index].fm[0].start, 
+                framebuf[buf_index].fm[0].length);
         }
+
+        // 重新入队缓冲区
+        struct v4l2_buffer qbuf;
+        struct v4l2_plane planes[FMT_NUM_PLANES];
+        memset(&planes, 0, sizeof(planes));
+        memset(&qbuf, 0, sizeof(qbuf));
+        qbuf.type = type;
+        qbuf.index = buf_index;
+        qbuf.memory = V4L2_MEMORY_MMAP;
+
+        if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == type) {
+            qbuf.m.planes = planes;
+            qbuf.length = FMT_NUM_PLANES;
+        }
+        framebuf[buf_index].fm[0].in_use = false;
+        // 缓冲区重新入队
+        if (ioctl(fd, VIDIOC_QBUF, &qbuf) == -1) {
+            perror("Failed to queue buffer");
+        }
+
+        if (!conversionSuccess || image_.isNull()) continue;
+        #ifdef RV1126
+            // 旋转图像以适应竖屏显示
+            image_ = image_.transformed(QMatrix().rotate(270));
+        #endif 
+        // 缩放图像并入队
+        TimedImage timedImage;
+        
+        // 使用Qt::FastTransformation代替SmoothTransformation以提高性能
+        timedImage.image = image_.scaled(displayLabel->size(), 
+            Qt::KeepAspectRatio, Qt::FastTransformation);
+        timedImage.timestamp = QTime::currentTime();
+        frameQueue.enqueue(timedImage);
     }
 }
 
-void Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
-    tjhandle handle = tjInitDecompress();
+bool Vvideo::MJPG2RGB(QImage &image_, void *data, size_t length) {
+    static tjhandle handle = tjInitDecompress(); // 静态handle避免重复初始化
     if (!handle) {
         qWarning() << "Failed to initialize TurboJPEG decompressor";
-        return;
+        return false;
     }
+
     int width, height, subsamp, colorspace;
     if (tjDecompressHeader3(handle, static_cast<unsigned char*>(data), length, 
                             &width, &height, &subsamp, &colorspace) != 0) {
         qWarning() << "Failed to read MJPEG header:" << tjGetErrorStr();
-        tjDestroy(handle);
-        return;
+        return false;
     }
-    QImage image(width, height, QImage::Format_RGB888);
+    // 直接操作image_减少额外开销
     if (tjDecompress2(handle, static_cast<unsigned char*>(data), length,
-                      image.bits(), width, 0, height, TJPF_RGB, TJFLAG_FASTDCT) != 0) {
+                      image_.bits(), width, 0, height, TJPF_RGB, TJFLAG_FASTDCT) != 0) {
         qWarning() << "Failed to decompress MJPEG frame:" << tjGetErrorStr();
-        tjDestroy(handle);
-        return;
+        return false;
     }
-    tjDestroy(handle);
-    image_ = image;  // 返回解码后的图像
+
+    return true;
 }
 
 /* 尝试直接操作image_(引用)减少额外开销 */
-void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
+bool Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
+    // 确保数据有效
+    if (!data || length == 0) {
+        qWarning() << "Invalid data for YUYV to RGB conversion.";
+        return false;
+    }
+
     // 1. 使用 ARGB 作为中间格式
     std::vector<uint8_t> argb_buffer(w * h * 4); // ARGB 缓冲区
-    libyuv::YUY2ToARGB(
+    int ret = libyuv::YUY2ToARGB(
         static_cast<const uint8_t*>(data),  // 输入 YUYV 数据
         w * 2,                              // YUYV 的步长（每行字节数）
         argb_buffer.data(),                 // 输出 ARGB 数据
         w * 4,                              // ARGB 的步长（每行字节数）
         w, h                                // 宽高
     );
-
+    if (ret < 0){ 
+        qWarning() << "Failed to convert YUYV to ARGB.";
+        return false; 
+    }
     // 2. 手动交换 ARGB 中的 R 和 B 通道
     for (size_t i = 0; i < w * h; ++i) {
         uint8_t *pixel = &argb_buffer[i * 4];
@@ -438,19 +470,30 @@ void Vvideo::YUYV2RGB(QImage &image_, void *data, size_t length) {
     }
 
     // 3. 将 ARGB 转换为 RGB24（丢弃 Alpha 通道）
-    libyuv::ARGBToRGB24(
+    ret = libyuv::ARGBToRGB24(
         argb_buffer.data(),    // 输入 ARGB 数据
         w * 4,                 // ARGB 的步长
         image_.bits(),         // 输出 RGB24 数据
         w * 3,                 // RGB24 的步长
         w, h
     );
+    if (ret < 0){ 
+        qWarning() << "Failed to convert ARGB to RGB24.";
+        return false; 
+    }
+
+    return (ret == 0);
 }
 
-void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
-    // QImage image(w, h, QImage::Format_RGB888);
+bool Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv, size_t len_uv) {
+    // 确保数据有效
+    if (!data_y || !data_uv || len_y == 0 || len_uv == 0) {
+        qWarning() << "Invalid data for NV12 to RGB conversion.";
+        return false;
+    }
+
     // 使用libyuv转换NV12到RGB
-    libyuv::NV12ToRGB24(
+    int ret = libyuv::NV12ToRGB24(
         static_cast<const uint8_t*>(data_y),    // Y平面
         w,                                      // Y步长
         static_cast<const uint8_t*>(data_uv),   // UV平面
@@ -459,7 +502,11 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
         w * 3,                                  // RGB步长
         w, h                                    // 宽高
     );
-    // image_ = image;
+    if(ret < 0){
+        qWarning() << "Failed to convert NV12 to RGB.";
+    }
+
+    return (ret == 0);
 }
 
 void Vvideo::updateImage()

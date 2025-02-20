@@ -54,7 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
     displayWidget = ui->Display;
     // 创建QTimer对象
     timer = new QTimer(this);
-    timer->setInterval(16);
+    timer->setInterval(33); // 设置为30FPS
     // 更新设备信息
 	fillComboBoxWithV4L2Devices();
 
