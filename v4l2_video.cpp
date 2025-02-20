@@ -10,7 +10,7 @@
 
 #include <turbojpeg.h>
 
-#define BUFCOUNT 24
+#define BUFCOUNT 20
 #define FMT_NUM_PLANES 2
 
 inline int clamp(int value, int min, int max)
@@ -260,7 +260,7 @@ int Vvideo::captureFrame() {
     while(!quit_)
     {
         // 限制缓存队列长度
-        if (frameIndexQueue.size() > 10) {
+        if (frameIndexQueue.size() > 16) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 等待队列有数据
             continue;
         }
@@ -279,7 +279,7 @@ int Vvideo::captureFrame() {
 
         // 监视文件超时
         struct timeval tv;
-        tv.tv_sec = 3; // 3秒
+        tv.tv_sec = 1; // 1秒
         tv.tv_usec = 0;
 
         fd_set fds;
@@ -324,7 +324,7 @@ void Vvideo::processFrame(MyWidget *displayLabel) {
     int buf_index;
     uint wait = 0;
     while (!quit_) {
-        while(QImageframes.size() > 15) {
+        while(frameQueue.size() > 29) {
             std::this_thread::sleep_for(std::chrono::milliseconds(30)); // 等待ui更新label
             wait ++;
             if (wait > 5) // 5次等待超时,UI更新出现问题
@@ -385,7 +385,12 @@ void Vvideo::processFrame(MyWidget *displayLabel) {
                 image_ = image_.transformed(QMatrix().rotate(270));
             #endif 
             // 处理后帧入队
-            QImageframes.enqueue(image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            // 记录入队时间戳
+            TimedImage timedImage;
+            timedImage.image = image_.scaled(displayLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            timedImage.timestamp = QTime::currentTime(); // 获取当前时间戳
+
+            frameQueue.enqueue(timedImage);
         }
     }
 }
@@ -459,28 +464,28 @@ void Vvideo::NV12ToRGB(QImage &image_, void *data_y, size_t len_y, void *data_uv
 
 void Vvideo::updateImage()
 {
-    QImage _img;
-    QImageframes.try_dequeue(_img);
     
-    if(_img.isNull()) return;
-    // 显示到label
-    displayLabel->updateImage(_img);
-    // QMetaObject::invokeMethod(displayLabel, 
-    //     [this, _img]() {
-    //         displayLabel->setPixmap(Pixmap_img);
-    //     }
-    // , Qt::QueuedConnection);
+    TimedImage timedImage;
+    if (!frameQueue.try_dequeue(timedImage)) return; // 从队列中取出带时间戳的图像
+    // 如果正在更新中,直接退出
+    if (displayLabel->status != Idle) return;
+    if (timedImage.image.isNull()) return;
+
+    displayLabel->updateImage(timedImage.timestamp, timedImage.image);
+
 }
 
 void Vvideo::takePic(QImage &img)
 {
-    img = QImageframes.dequeue();
+    TimedImage timedImage;
+    img = frameQueue.dequeue().image;
 }
 
 int Vvideo::closeDevice()
 {
     frameIndexQueue.clear(); // 清空队列
-    QImageframes.clear();
+    frameQueue.clear();
+    // QImageframes.clear();
     // 停止采集并释放映射
     if (ioctl(fd, VIDIOC_STREAMOFF, &buffer.type) == -1) {
         perror("Failed to stop streaming");

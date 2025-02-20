@@ -19,6 +19,8 @@
 #include <QMutexLocker>
 #include <thread>
 #include <QDebug>
+#include <QTime>
+
 
 #include <linux/videodev2.h>
 
@@ -37,7 +39,10 @@ typedef struct __video_buffer {
     int plane_count;            // 平面的数量
 } video_buf_t;
 
-
+struct TimedImage {
+    QImage image;
+    QTime timestamp;  // 记录入队的时间戳
+};
 
 class Vvideo : public QObject {
     Q_OBJECT    // 信号与槽必要宏
@@ -82,9 +87,10 @@ private:
     std::thread captureThread_;
     std::thread processThread_;
     MyWidget *displayLabel = nullptr;
-    // SafeQueue<video_buf_t> frameQueue; // 原始数据帧队列
+    SafeQueue<TimedImage> frameQueue; // 测试
     SafeQueue<int> frameIndexQueue; // 尝试用索引队列(失败)
-    SafeQueue<QImage> QImageframes;    // 处理后帧队列
+    // SafeQueue<QImage> QImageframes;    // 处理后帧队列
+    
     struct v4l2_buffer buffer;
     video_buf_t *framebuf = nullptr; // 映射
     

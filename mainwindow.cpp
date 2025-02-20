@@ -54,6 +54,7 @@ MainWindow::MainWindow(QWidget *parent)
     displayWidget = ui->Display;
     // 创建QTimer对象
     timer = new QTimer(this);
+    timer->setInterval(16);
     // 更新设备信息
 	fillComboBoxWithV4L2Devices();
 
@@ -298,7 +299,7 @@ void MainWindow::on_open_pb_released()
     // 连接定时器的timeout信号到up()槽函数
     connect(timer, &QTimer::timeout, m_captureThread.get(), &Vvideo::updateImage);
     // 启动定时器
-    timer->start(330);
+    timer->start();
 }
 // 美化UI用(按钮图标更新)
 void MainWindow::on_takepic_pressed()

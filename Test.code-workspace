@@ -74,7 +74,8 @@
 			"qqueue": "cpp",
 			"qthread": "cpp",
 			"qimagereader": "cpp",
-			"qcombobox": "cpp"
+			"qcombobox": "cpp",
+			"qtime": "cpp"
 		}
 	}
 }
