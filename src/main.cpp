@@ -1,7 +1,7 @@
 #include <QGuiApplication> // 替换 QApplication
 #include <QQmlApplicationEngine>
-#include "v4l2_video.h"
-#include "VideoProvider.h" // 新增
+// #include "Model/v4l2_video.h"
+// #include "VideoProvider.h" // 新增
 
 #ifdef RV1126
 #include <iostream>
@@ -63,19 +63,23 @@ int main(int argc, char *argv[]) {
 	
 	#endif // RV1126
     QGuiApplication app(argc, argv); // 使用 QGuiApplication 替代 QApplication
-    
-    Vvideo camera(true, nullptr);  // 创建 Vvideo 对象，传入是否支持多平面
-    
-    // 注册 VideoProvider 类型
-    qmlRegisterType<VideoProvider>("CameraCore", 1, 0, "VideoProvider");
-
     QQmlApplicationEngine engine;
     
+    // Vvideo camera(true, nullptr);  // 创建 Vvideo 对象，传入是否支持多平面
+    
+    // // 注册 VideoProvider 类型
+    // qmlRegisterType<VideoProvider>("CameraCore", 1, 0, "VideoProvider");
+
     // 将 camera 对象暴露给 QML
-    engine.rootContext()->setContextProperty("camera", &camera);
+    // engine.rootContext()->setContextProperty("camera", &camera);
     
-    // 加载 QML 文件
-    engine.load(QUrl("qrc:/Main.qml"));
-    
-    return app.exec();
+	const QUrl url(QStringLiteral("qrc:/View/Main.qml"));
+	QObject::connect(&engine, &QQmlApplicationEngine::objectCreated,
+					 &app, [url](QObject *obj, const QUrl &objUrl) {
+		if (!obj && url == objUrl)
+			QCoreApplication::exit(-1);
+	}, Qt::QueuedConnection);
+	engine.load(url);
+
+	return app.exec();
 }

@@ -1,0 +1,13 @@
+<RCC>
+    <qresource prefix="/">
+        <file>View/Main.qml</file>
+        <file>View/MyComboBox.qml</file>
+    </qresource>
+    <qresource prefix="/icon">
+        <file>View/icon/takepic_2.svg</file>
+        <file>View/icon/takepic_1.svg</file>
+    </qresource>
+    <qresource prefix="/pic">
+        <file>View/pic/test.png</file>
+    </qresource>
+</RCC>

@@ -36,22 +36,18 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(QT_QML_GENERATE_QMLLS_INI ON)
-find_package(Qt5 COMPONENTS Quick Qml REQUIRED)
+find_package(Qt5 COMPONENTS Core Quick Qml REQUIRED)
+
+file(GLOB_RECURSE ModelSource "src/Model/*.cpp" "src/Model/*.h")
+file(GLOB_RECURSE ControllerSource "src/View/Controller/*.cpp" "src/View/Controller/*.h")
+
 
 set(PROJECT_SOURCES
-        main.cpp # 入口
+    src/main.cpp # 入口
 
-        queue_.h # 安全队列
-        mainwindow.cpp  # 主窗口
-        mainwindow.h
-        v4l2_video.cpp  # v4l2主要逻辑
-        v4l2_video.h
-
-        VideoProvider.cpp   # 视频流提供器
-        VideoProvider.h
-
-        Main.qml
-        qml.qrc # 资源文件
+    ${ModelSource} # 模型
+    ${ControllerSource} # 控制器
+    src/qml.qrc    # 资源文件
 )
 
 add_executable(QC_e
